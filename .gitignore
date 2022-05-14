@@ -1,0 +1,10 @@
+*.o
+*.swp
+*.bin
+*.obj
+*log*
+*.elf
+rv_emu
+tags
+cscope*
+arch-test
