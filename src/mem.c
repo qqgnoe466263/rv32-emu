@@ -25,7 +25,7 @@ s32 read_mem(rv_mem *mem, u32 addr, u8 byte)
 void write_mem(rv_mem *mem, u32 addr, u32 data, u8 byte)
 {
     u32 *target = (u32 *)(mem->mem + addr);
-    
+
     switch (byte) {
     case 1:
         *(u8 *)target = (data & 0xff);

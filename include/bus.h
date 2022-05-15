@@ -7,7 +7,7 @@
 typedef struct riscv_bus rv_bus;
 
 struct riscv_bus {
-    rv_mem vmem; 
+    rv_mem vmem;
 };
 
 s32 read_bus(rv_bus *bus, u32 addr, u8 byte);

@@ -3,6 +3,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "debug.h"
 
 typedef unsigned char   u8;
 typedef signed char     s8;

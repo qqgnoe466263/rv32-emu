@@ -6,14 +6,16 @@
 void unit_test_rw_mem_func(rv_emu *emu)
 {
     s32 val = 0;
-    write_bus(&emu->vcpu.bus, 0x10000001, 0xdeadbeef, 1);
-    val = read_bus(&emu->vcpu.bus, 0x10000001, 1);
+    u32 test_addr = 0x10000001;
+
+    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 1);
+    val = read_bus(&emu->vcpu.bus, test_addr, 1);
     printf("[UT] val = 0x%x\n", val);
-    write_bus(&emu->vcpu.bus, 0x10000001, 0xdeadbeef, 2);
-    val = read_bus(&emu->vcpu.bus, 0x10000001, 2);
+    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 2);
+    val = read_bus(&emu->vcpu.bus, test_addr, 2);
     printf("[UT] val = 0x%x\n", val);
-    write_bus(&emu->vcpu.bus, 0x10000001, 0xdeadbeef, 4);
-    val = read_bus(&emu->vcpu.bus, 0x10000001, 4);
+    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 4);
+    val = read_bus(&emu->vcpu.bus, test_addr, 4);
     printf("[UT] val = 0x%x\n", val);
 }
 
@@ -28,14 +30,20 @@ int main(int argc, char **argv)
     if (!emu)
         return -1;
 
-#if 1
+#if 0
     unit_test_rw_mem_func(emu);
-#endif 
+#endif
 
     if (load_rv_elf(emu, argv[1]) < 0)
-        return -1;
+        goto err;
 
+    while (1) {
+        fetch(&emu->vcpu);
+        decode(&emu->vcpu);
+        execute(&emu->vcpu);
+        emu->vcpu.reg.pc += 4;
+    }
+err:
     exit_emu(emu);
-
     return 0;
 }

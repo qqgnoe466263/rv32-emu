@@ -13,17 +13,17 @@ s32 read_bus(rv_bus *bus, u32 addr, u8 byte)
     int i;
 
     if (byte > 4) {
-        RW_DBG("%s, %d-byte > 4", __func__, byte);    
+        RW_DBG("%s, %d-byte > 4", __func__, byte);
         return -1;
     }
 
     if (addr > MEM_SIZE) {
-        RW_DBG("%s, addr(0x%x) > MEM SIZE(0x%x)\n", __func__, addr, MEM_SIZE);    
+        RW_DBG("%s, addr(0x%x) > MEM SIZE(0x%x)\n", __func__, addr, MEM_SIZE);
         return -1;
     }
-    
+
     for (i = 0; i < KERNBASE; i++) {
-        if (addr >= mem_map[i].base && 
+        if (addr >= mem_map[i].base &&
             addr < (mem_map[i].base + mem_map[i].size))
             break;
     }
@@ -39,17 +39,17 @@ void write_bus(rv_bus *bus, u32 addr, u32 data, u8 byte)
     int i;
 
     if (byte > 4) {
-        RW_DBG("%s, %d-byte > 4\n", __func__, byte);    
+        RW_DBG("%s, %d-byte > 4\n", __func__, byte);
         exit(-1);
     }
 
     if (addr > MEM_SIZE) {
-        RW_DBG("%s, addr(0x%x) > MEM SIZE(0x%x)\n", __func__, addr, MEM_SIZE);    
+        RW_DBG("%s, addr(0x%x) > MEM SIZE(0x%x)\n", __func__, addr, MEM_SIZE);
         exit(-1);
     }
 
     for (i = 0; i < KERNBASE; i++) {
-        if (addr >= mem_map[i].base && 
+        if (addr >= mem_map[i].base &&
             addr < (mem_map[i].base + mem_map[i].size))
             break;
     }
