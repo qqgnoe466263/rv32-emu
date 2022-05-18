@@ -3,8 +3,11 @@
 
 #include "common.h"
 
-#define CONFIG_RW_DBG       0
-#define CONFIG_PIPE_DBG     1
+#define CONFIG_RW_DBG        0
+#define CONFIG_PIPE_DBG      0
+#define CONFIG_FETCH_DBG     0
+#define CONFIG_DECODE_DBG    0
+#define CONFIG_EXECUTE_DBG   0
 
 #if CONFIG_RW_DBG
 #define RW_DBG(...) fprintf(stdout, __VA_ARGS__);
@@ -12,10 +15,23 @@
 #define RW_DBG(...);
 #endif
 
-#if CONFIG_PIPE_DBG
-#define PIPE_DBG(...) fprintf(stdout, __VA_ARGS__);
+#if CONFIG_FETCH_DBG
+#define FETCH_DBG(...) fprintf(stdout, __VA_ARGS__);
 #else
-#define PIPE_DBG(...);
+#define FETCH_DBG(...);
 #endif
 
+#if CONFIG_DECODE_DBG
+#define DECODE_DBG(...) fprintf(stdout, __VA_ARGS__);
+#else
+#define DECODE_DBG(...);
 #endif
+
+#if CONFIG_EXECUTE_DBG
+#define EXECUTE_DBG(...) fprintf(stdout, __VA_ARGS__);
+#else
+#define EXECUTE_DBG(...);
+#endif
+
+
+#endif /* _DEBUG_H_ */

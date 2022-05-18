@@ -13,4 +13,6 @@ typedef signed short    s16;
 typedef unsigned int    u32;
 typedef signed int      s32;
 
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 #endif

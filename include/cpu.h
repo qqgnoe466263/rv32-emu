@@ -46,6 +46,7 @@ typedef struct riscv_instruction {
             u32 imm5:5; // imm[4:0]
             u32 func3:3;
             u32 rs1:5;
+            u32 rs2:5;
             u32 imm7:7; // imm[11:5]
         } s;
 
@@ -54,6 +55,7 @@ typedef struct riscv_instruction {
             u32 imm5:5; // imm[4:1|11]
             u32 func3:3;
             u32 rs1:5;
+            u32 rs2:5;
             u32 imm7:7; // imm[12|10:5]
         } b;
 
@@ -77,6 +79,10 @@ typedef struct riscv_exec_ctx {
     u32 *rs1;
     u32 *rs2;
     u32 imm;
+    union {
+        u8 func7;
+        rv_cpu *cpu;
+    };
 } rv_exec_ctx;
 
 typedef struct riscv_exec {
@@ -95,6 +101,7 @@ struct riscv_cpu {
     /* CPU context */
     u32 fetch_instr;
     rv_instr decode_instr;
+    u8 pc_sel; // 1 : branch enable
 };
 
 void fetch(rv_cpu *cpu);

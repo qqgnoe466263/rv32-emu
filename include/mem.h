@@ -29,7 +29,7 @@ static const rv_mem_entry mem_map[] = {
     [KERNBASE] = {0x80000000, 0x10001000}, /* 256MB */
 };
 
-#define MEM_SIZE (mem_map[KERNBASE].base + mem_map[KERNBASE].size)
+#define MEM_SIZE (0x100000000) //(mem_map[KERNBASE].base + mem_map[KERNBASE].size)
 
 struct riscv_mem {
     u8 *mem;
