@@ -1,4 +1,5 @@
 #include "riscv.h"
+#include "elf.h"
 
 rv_emu *init_emu()
 {
@@ -9,8 +10,6 @@ rv_emu *init_emu()
     emu->vcpu.bus.vmem.mem = (u8 *)malloc(MEM_SIZE);
     if (!emu->vcpu.bus.vmem.mem)
         return NULL;
-
-    emu->vcpu.reg.pc = mem_map[KERNBASE].base;
 
     return emu;
 }
@@ -25,7 +24,7 @@ s8 load_rv_elf(rv_emu *emu, u8 *filename)
 {
     FILE *f = fopen(filename, "rb");
     if (!f)
-        return -1;
+        return false;
 
     fseek(f, 0, SEEK_END);
     size_t fsize = ftell(f);
@@ -33,13 +32,23 @@ s8 load_rv_elf(rv_emu *emu, u8 *filename)
 
     if (!fsize) {
         fclose(f);
-        return -1;
+        return false;
     }
 
-    size_t r = fread(emu->vcpu.bus.vmem.mem, 1, fsize, f);
+    u8 *buf = malloc(fsize);
+    size_t r = fread(buf, 1, fsize, f);
+    //size_t r = fread(emu->vcpu.bus.vmem.mem, 1, fsize, f);
     fclose(f);
-    if (r != fsize)
-        return -1;
+    if (r != fsize) {
+        free(buf);
+        return false;
+    }
 
-    return 0;
+    if (!parse_elf(emu->vcpu.bus.vmem.mem, buf, &emu->vcpu.pc)) {
+        free(buf);
+        return false;
+    }
+
+    free(buf);
+    return true;
 }

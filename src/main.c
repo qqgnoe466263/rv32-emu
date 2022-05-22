@@ -26,9 +26,9 @@ void dump_reg(rv_cpu *cpu)
         "a1", "a2", "a3", "a4", "a5",  "a6",  "a7", "s2", "s3", "s4", "s5",
         "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"};
 
-    printf("pc = 0x%x\n", cpu->reg.pc);
+    printf("pc = 0x%x\n", cpu->pc);
     for (s8 i = 0; i < 32; i++) {
-        printf("x%-2d(%-3s) = 0x%-8x,", i, reg_abi_name[i], cpu->reg.xreg[i]);
+        printf("x%-2d(%-3s) = 0x%-8x,", i, reg_abi_name[i], cpu->xreg[i]);
         if (!((i + 1) & 3))
             printf("\n");
     }
@@ -39,39 +39,36 @@ int main(int argc, char **argv)
 {
     if (argc < 2) {
         fprintf(stdout, "Usage : ./rv_emu <ELF format> \n");
-        return -1;
+        return false;
     }
 
     rv_emu *emu = init_emu();
     if (!emu)
-        return -1;
+        return false;
 
 #if 0
     unit_test_rw_mem_func(emu);
 #endif
 
-    if (load_rv_elf(emu, argv[1]) < 0)
+    if (!load_rv_elf(emu, argv[1]))
         goto err;
 
+#if 1
     while (1) {
         /* x0 is always 0 */
-        emu->vcpu.reg.xreg[0] = 0;
-
+        emu->vcpu.xreg[0] = 0;
         fetch(&emu->vcpu);
-#if 1
-        if (!emu->vcpu.fetch_instr)
-            break;
-#endif
         decode(&emu->vcpu);
         execute(&emu->vcpu);
 
         if (emu->vcpu.pc_sel)
             emu->vcpu.pc_sel = 0;
         else
-            emu->vcpu.reg.pc += 4;
+            emu->vcpu.pc += 4;
     }
 
     dump_reg(&emu->vcpu);
+#endif
 
 err:
     exit_emu(emu);

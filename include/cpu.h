@@ -89,13 +89,9 @@ typedef struct riscv_exec {
     void (*exec)(rv_exec_ctx ctx);
 } rv_exec;
 
-struct riscv_register {
+struct riscv_cpu {
     u32 xreg[32];
     u32 pc;
-};
-
-struct riscv_cpu {
-    rv_reg reg;
     rv_bus bus;
 
     /* CPU context */

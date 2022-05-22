@@ -172,7 +172,7 @@ void exec_lhu(rv_exec_ctx ctx)
 void exec_beq(rv_exec_ctx ctx)
 {
     if (*ctx.rs1 == *ctx.rs2) {
-        ctx.cpu->reg.pc += ctx.imm;
+        ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
 }
@@ -180,7 +180,7 @@ void exec_beq(rv_exec_ctx ctx)
 void exec_bne(rv_exec_ctx ctx)
 {
     if (*ctx.rs1 != *ctx.rs2) {
-        ctx.cpu->reg.pc += ctx.imm;
+        ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
 }
@@ -188,7 +188,7 @@ void exec_bne(rv_exec_ctx ctx)
 void exec_blt(rv_exec_ctx ctx)
 {
     if ((s32)*ctx.rs1 < (s32)*ctx.rs2) {
-        ctx.cpu->reg.pc += ctx.imm;
+        ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
 }
@@ -196,7 +196,7 @@ void exec_blt(rv_exec_ctx ctx)
 void exec_bge(rv_exec_ctx ctx)
 {
     if ((s32)*ctx.rs1 >= (s32)*ctx.rs2) {
-        ctx.cpu->reg.pc += ctx.imm;
+        ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
 }
@@ -213,14 +213,19 @@ void exec_bgeu(rv_exec_ctx ctx)
 
 void exec_jalr(rv_exec_ctx ctx)
 {
-    *ctx.rd = ctx.cpu->reg.pc + 4;
-    ctx.cpu->reg.pc = (*ctx.rs1 + ctx.imm);
+    *ctx.rd = ctx.cpu->pc + 4;
+    ctx.cpu->pc = (*ctx.rs1 + ctx.imm);
     ctx.cpu->pc_sel = 1;
+
+    if (ctx.cpu->pc == 0x0) {
+        printf("Execute done\n");
+        exit(0);
+    }
 
 #if CONFIG_FETCH_DBG
     FETCH_DBG("Ret to Func_0x%x, ret_val : 0x%x\n",
-              ctx.cpu->reg.pc,
-              ctx.cpu->reg.xreg[10]);
+              ctx.cpu->pc,
+              ctx.cpu->xreg[10]);
 #endif
 }
 
@@ -228,8 +233,8 @@ void exec_jalr(rv_exec_ctx ctx)
 
 void exec_jal(rv_exec_ctx ctx)
 {
-    *ctx.rd = ctx.cpu->reg.pc + 4;
-    ctx.cpu->reg.pc += ctx.imm;
+    *ctx.rd = ctx.cpu->pc + 4;
+    ctx.cpu->pc += ctx.imm;
     ctx.cpu->pc_sel = 1;
 }
 
@@ -326,8 +331,8 @@ static void exec_i(rv_cpu *cpu)
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
     ctx.imm = sign_extend(instr.i.imm, 12);
-    ctx.rd = &cpu->reg.xreg[instr.i.rd];
-    ctx.rs1 = &cpu->reg.xreg[instr.i.rs1];
+    ctx.rd = &cpu->xreg[instr.i.rd];
+    ctx.rs1 = &cpu->xreg[instr.i.rs1];
 
     if (instr.i.func3 > ARRAY_SIZE(i_exec_entry)) {
         fprintf(stdout, "%s, FUNC3(0x%x) Not Imp\n",
@@ -353,8 +358,8 @@ static void exec_i_load(rv_cpu *cpu)
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
     ctx.imm = sign_extend(instr.i.imm, 12);
-    ctx.rd = &cpu->reg.xreg[instr.i.rd];
-    ctx.rs1 = &cpu->reg.xreg[instr.i.rs1];
+    ctx.rd = &cpu->xreg[instr.i.rd];
+    ctx.rs1 = &cpu->xreg[instr.i.rs1];
     ctx.cpu = cpu;
 
     if (instr.i.func3 > ARRAY_SIZE(i_load_exec_entry)) {
@@ -381,8 +386,8 @@ static void exec_i_jalr(rv_cpu *cpu)
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
     ctx.imm = sign_extend(instr.i.imm, 12);
-    ctx.rd = &cpu->reg.xreg[instr.i.rd];
-    ctx.rs1 = &cpu->reg.xreg[instr.i.rs1];
+    ctx.rd = &cpu->xreg[instr.i.rd];
+    ctx.rs1 = &cpu->xreg[instr.i.rs1];
     ctx.cpu = cpu;
 
     if (instr.i.func3 > ARRAY_SIZE(i_jalr_exec_entry)) {
@@ -408,9 +413,9 @@ static void exec_r(rv_cpu *cpu)
 {
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
-    ctx.rd = &cpu->reg.xreg[instr.r.rd];
-    ctx.rs1 = &cpu->reg.xreg[instr.r.rs1];
-    ctx.rs2 = &cpu->reg.xreg[instr.r.rs2];
+    ctx.rd = &cpu->xreg[instr.r.rd];
+    ctx.rs1 = &cpu->xreg[instr.r.rs1];
+    ctx.rs2 = &cpu->xreg[instr.r.rs2];
     ctx.func7 = instr.r.func7;
 
     if (instr.r.func3 > ARRAY_SIZE(r_exec_entry)) {
@@ -436,8 +441,8 @@ static void exec_s(rv_cpu *cpu)
 {
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
-    ctx.rs1 = &cpu->reg.xreg[instr.s.rs1];
-    ctx.rs2 = &cpu->reg.xreg[instr.s.rs2];
+    ctx.rs1 = &cpu->xreg[instr.s.rs1];
+    ctx.rs2 = &cpu->xreg[instr.s.rs2];
     ctx.imm = sign_extend(instr.s.imm7 << 5 | instr.s.imm5, 12);
     ctx.cpu = cpu;
 
@@ -464,8 +469,8 @@ static void exec_b(rv_cpu *cpu)
 {
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
-    ctx.rs1 = &cpu->reg.xreg[instr.b.rs1];
-    ctx.rs2 = &cpu->reg.xreg[instr.b.rs2];
+    ctx.rs1 = &cpu->xreg[instr.b.rs1];
+    ctx.rs2 = &cpu->xreg[instr.b.rs2];
 
     ctx.imm =
     sign_extend((instr.b.imm5 & 0b00001) << 11   | // bit 11
@@ -503,7 +508,7 @@ static void exec_j(rv_cpu *cpu)
 {
     rv_exec_ctx ctx = {0};
     rv_instr instr = cpu->decode_instr;
-    ctx.rd = &cpu->reg.xreg[instr.j.rd];
+    ctx.rd = &cpu->xreg[instr.j.rd];
     ctx.cpu = cpu;
 
     ctx.imm =
@@ -516,8 +521,8 @@ static void exec_j(rv_cpu *cpu)
 #if CONFIG_FETCH_DBG
     if (instr.j.rd == 1) {
         FETCH_DBG("Jump to Func_0x%x(arg0:0x%x)\n",
-                  ctx.cpu->reg.pc + ctx.imm,
-                  ctx.cpu->reg.xreg[10]);
+                  ctx.cpu->pc + ctx.imm,
+                  ctx.cpu->xreg[10]);
     }
 #endif
 

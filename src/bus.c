@@ -22,6 +22,7 @@ s32 read_bus(rv_bus *bus, u32 addr, u8 byte)
         return -1;
     }
 
+/*
     for (i = 0; i < KERNBASE; i++) {
         if (addr >= mem_map[i].base &&
             addr < (mem_map[i].base + mem_map[i].size))
@@ -34,6 +35,8 @@ s32 read_bus(rv_bus *bus, u32 addr, u8 byte)
         addr -= mem_map[i].base;
         RW_DBG("[%10s] %s, offset : 0x%x\n", __func__, mem_map_string[i], addr);
     }
+*/
+    RW_DBG("[%10s] Addr : 0x%08x\n", __func__, addr);
     return read_mem(&bus->vmem, addr, byte);
 }
 
@@ -51,6 +54,7 @@ void write_bus(rv_bus *bus, u32 addr, u32 data, u8 byte)
         exit(-1);
     }
 
+/*
     for (i = 0; i < KERNBASE; i++) {
         if (addr >= mem_map[i].base &&
             addr < (mem_map[i].base + mem_map[i].size))
@@ -63,5 +67,7 @@ void write_bus(rv_bus *bus, u32 addr, u32 data, u8 byte)
         addr -= mem_map[i].base;
         RW_DBG("[%10s] %s, offset : 0x%x\n", __func__, mem_map_string[i], addr);
     }
+*/
+    RW_DBG("[%10s] Addr : 0x%08x\n", __func__, addr);
     write_mem(&bus->vmem, addr, data, byte);
 }

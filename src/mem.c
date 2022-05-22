@@ -18,7 +18,7 @@ s32 read_mem(rv_mem *mem, u32 addr, u8 byte)
         break;
     }
 
-    RW_DBG("[%10s] BYTE : %d, val = 0x%x \n", __func__, byte, val);
+    RW_DBG("[%10s] BYTE : %d, val = 0x%08x \n", __func__, byte, val);
     return val;
 }
 
@@ -37,7 +37,7 @@ void write_mem(rv_mem *mem, u32 addr, u32 data, u8 byte)
         *(u32 *)target = (data & 0xffffffff);
     }
 
-    RW_DBG("[%10s] BYTE : %d, val = 0x%x \n", __func__, byte, *target);
+    RW_DBG("[%10s] BYTE : %d, val = 0x%08x \n", __func__, byte, *target);
 }
 
 
