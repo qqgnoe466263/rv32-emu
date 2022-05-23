@@ -71,6 +71,8 @@ void decode(rv_cpu *cpu)
 
 #if CONFIG_DECODE_DBG
     switch (cpu->decode_instr.type) {
+    case I_TYPE_FENCE:
+        break;
     case I_TYPE_LOAD:
     case I_TYPE:
     case I_TYPE_JARL:

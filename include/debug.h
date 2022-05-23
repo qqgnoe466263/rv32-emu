@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-#define CONFIG_RW_DBG        1
+#define CONFIG_RW_DBG        0
 #define CONFIG_FETCH_DBG     1
 #define CONFIG_DECODE_DBG    0
 #define CONFIG_EXECUTE_DBG   0

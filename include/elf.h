@@ -2,6 +2,7 @@
 #define _ELF_H_
 
 #include "common.h"
+#include "mem.h"
 
 typedef u32 Elf32_Addr;
 typedef u32 Elf32_Off;
@@ -123,7 +124,7 @@ struct Elf32_Shdr {
     Elf32_Word sh_entsize;
 };
 
-s8 parse_elf(u8 *mem, u8 *elf_file, u32 *entry);
+s8 parse_elf(rv_mem *mem, u8 *elf_file, u32 *entry);
 s8 is_elf_valid(struct Elf32_Ehdr *e_hdr);
 
 

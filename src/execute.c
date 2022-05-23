@@ -56,8 +56,9 @@ void exec_srli_srai(rv_exec_ctx ctx)
     if (imm5_11 == 0x20) { // srai
         *ctx.rd = *ctx.rs1 >> imm0_4;
     } else { // srli
-        EXECUTE_DBG("%s, Not Imp", __func__);
-        exit(-1);
+        *ctx.rd = *ctx.rs1 >> imm0_4;
+        //EXECUTE_DBG("%s, Not Imp", __func__);
+        //exit(-1);
     }
 }
 
@@ -107,8 +108,9 @@ void exec_srl_sra(rv_exec_ctx ctx)
     if (ctx.func7 == 0x20) { // sra
         *ctx.rd = *ctx.rs1 >> *ctx.rs2;
     } else { // srl
-        EXECUTE_DBG("%s, Not Imp", __func__);
-        exit(-1);
+        *ctx.rd = *ctx.rs1 >> *ctx.rs2;
+        //EXECUTE_DBG("%s, Not Imp", __func__);
+        //exit(-1);
     }
 }
 
@@ -161,10 +163,12 @@ void exec_lw(rv_exec_ctx ctx)
 
 void exec_lbu(rv_exec_ctx ctx)
 {
+    *ctx.rd = (u8)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 1);
 }
 
 void exec_lhu(rv_exec_ctx ctx)
 {
+    *ctx.rd = (u16)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 2);
 }
 
 /* B type */
@@ -203,18 +207,30 @@ void exec_bge(rv_exec_ctx ctx)
 
 void exec_bltu(rv_exec_ctx ctx)
 {
+    if ((s32)*ctx.rs1 < (s32)*ctx.rs2) {
+        ctx.cpu->pc += ctx.imm;
+        ctx.cpu->pc_sel = 1;
+    }
 }
 
 void exec_bgeu(rv_exec_ctx ctx)
 {
+   if ((s32)*ctx.rs1 >= (s32)*ctx.rs2) {
+        ctx.cpu->pc += ctx.imm;
+        ctx.cpu->pc_sel = 1;
+    }
 }
 
 /* I type (jalr) */
 
 void exec_jalr(rv_exec_ctx ctx)
 {
+    /* if rd and rs1 are the same register,
+     * need to backup rs1 value.
+     */
+    u32 tmp = *ctx.rs1;
     *ctx.rd = ctx.cpu->pc + 4;
-    ctx.cpu->pc = (*ctx.rs1 + ctx.imm);
+    ctx.cpu->pc = (tmp + ctx.imm);
     ctx.cpu->pc_sel = 1;
 
     if (ctx.cpu->pc == 0x0) {
@@ -223,9 +239,11 @@ void exec_jalr(rv_exec_ctx ctx)
     }
 
 #if CONFIG_FETCH_DBG
-    FETCH_DBG("Ret to Func_0x%x, ret_val : 0x%x\n",
-              ctx.cpu->pc,
-              ctx.cpu->xreg[10]);
+    // TODO : Valid if rd is ra
+    if (ctx.rd == &ctx.cpu->xreg[10])
+        FETCH_DBG("Ret to Func_0x%x, ret_val : 0x%x\n",
+                  ctx.cpu->pc,
+                  ctx.cpu->xreg[10]);
 #endif
 }
 
@@ -236,6 +254,18 @@ void exec_jal(rv_exec_ctx ctx)
     *ctx.rd = ctx.cpu->pc + 4;
     ctx.cpu->pc += ctx.imm;
     ctx.cpu->pc_sel = 1;
+}
+
+/* U type */
+
+void exec_lui(rv_exec_ctx ctx)
+{
+    *ctx.rd = ctx.imm;
+}
+
+void exec_auipc(rv_exec_ctx ctx)
+{
+    *ctx.rd = ctx.cpu->pc + ctx.imm;
 }
 
 rv_exec i_exec_entry[] = {
@@ -270,8 +300,8 @@ rv_exec i_load_exec_entry[] = {
     [0x0] = {&exec_lb},
     [0x1] = {&exec_lh},
     [0x2] = {&exec_lw},
-    //[0x4] = {&exec_lbu},
-    //[0x5] = {&exec_lhu},
+    [0x4] = {&exec_lbu},
+    [0x5] = {&exec_lhu},
 };
 
 rv_exec i_jalr_exec_entry[] = {
@@ -283,8 +313,8 @@ rv_exec b_exec_entry[] = {
     [0x1] = {&exec_bne},
     [0x4] = {&exec_blt},
     [0x5] = {&exec_bge},
-    //[0x6] = {&exec_bltu},
-    //[0x7] = {&exec_bgeu},
+    [0x6] = {&exec_bltu},
+    [0x7] = {&exec_bgeu},
 };
 
 void execute(rv_cpu *cpu)
@@ -292,6 +322,8 @@ void execute(rv_cpu *cpu)
     EXECUTE_DBG("-->[E] ");
 
     switch (cpu->decode_instr.type) {
+    case I_TYPE_FENCE:
+        break;
     case I_TYPE_LOAD:
         exec_i_load(cpu);
         break;
@@ -301,7 +333,7 @@ void execute(rv_cpu *cpu)
     case I_TYPE_JARL:
         exec_i_jalr(cpu);
         break;
-    //case I_TYPE_ENV:
+    case I_TYPE_ENV:
         break;
     case R_TYPE:
         exec_r(cpu);
@@ -312,10 +344,12 @@ void execute(rv_cpu *cpu)
     case B_TYPE:
         exec_b(cpu);
         break;
-    //case U_TYPE_LUI:
-    //case U_TYPE_AUIPC:
-        //exec_u(cpu);
-        //break;
+    case U_TYPE_LUI:
+        exec_u(cpu);
+        break;
+    case U_TYPE_AUIPC:
+        exec_u(cpu);
+        break;
     case J_TYPE:
         exec_j(cpu);
         break;
@@ -472,12 +506,10 @@ static void exec_b(rv_cpu *cpu)
     ctx.rs1 = &cpu->xreg[instr.b.rs1];
     ctx.rs2 = &cpu->xreg[instr.b.rs2];
 
-    ctx.imm =
-    sign_extend((instr.b.imm5 & 0b00001) << 11   | // bit 11
-                (instr.b.imm5 & 0b11110)         | // bit 1~4
-                (instr.b.imm7 & 0b1000000) << 12 | // bit 12
-                (instr.b.imm7 & 0b0111111) << 5,   // bit 5~10
-                12);
+    ctx.imm = ((s32)(cpu->fetch_instr & 0x80000000) >> 19) | // bit 12 (31 - 19)
+               (s32)((cpu->fetch_instr & 0x80) << 4)       | // bit 11 (7 + 4)
+               (s32)((cpu->fetch_instr >> 20) & 0x7e0)     | // bit 10:5
+               (s32)((cpu->fetch_instr >> 7) & 0x1e);        // bit 4:1
     ctx.cpu = cpu;
 
     if (instr.b.func3 > ARRAY_SIZE(b_exec_entry)) {
@@ -501,7 +533,21 @@ static void exec_b(rv_cpu *cpu)
 
 static void exec_u(rv_cpu *cpu)
 {
-    EXECUTE_DBG("\n");
+    rv_exec_ctx ctx = {0};
+    rv_instr instr = cpu->decode_instr;
+    ctx.rd = &cpu->xreg[instr.u.rd];
+    ctx.imm = sign_extend(instr.u.imm20, 20);
+    ctx.cpu = cpu;
+
+    EXECUTE_DBG("%12s, rd(%s) : 0x%08x, imm : 0x%08x\n",
+             __func__, reg_abi[instr.u.rd], *ctx.rd, ctx.imm);
+
+    ctx.imm = (s32)(cpu->fetch_instr & 0xfffff000);
+
+    if (instr.u.op == U_TYPE_LUI)
+        exec_lui(ctx);
+    else
+        exec_auipc(ctx);
 }
 
 static void exec_j(rv_cpu *cpu)
@@ -511,12 +557,10 @@ static void exec_j(rv_cpu *cpu)
     ctx.rd = &cpu->xreg[instr.j.rd];
     ctx.cpu = cpu;
 
-    ctx.imm =
-    sign_extend((instr.j.imm20 & 0b10000000000000000000) << 20 | // bit 20
-                (instr.j.imm20 & 0b00000000000011111111) << 12 | // bit 19~12
-                (instr.j.imm20 & 0b00000000000100000000) << 3  | // bit 11
-                (instr.j.imm20 & 0b01111111111000000000) >> 8,   // bit 10~1
-                20);
+    ctx.imm = ((s32)(cpu->fetch_instr & 0x80000000) >> 11) |
+               (s32)((cpu->fetch_instr & 0xff000)) |
+               (s32)((cpu->fetch_instr >> 9) & 0x800) |
+               (s32)((cpu->fetch_instr >> 20) & 0x7fe);
 
 #if CONFIG_FETCH_DBG
     if (instr.j.rd == 1) {

@@ -5,6 +5,7 @@
 
 typedef struct riscv_memory_entry rv_mem_entry;
 typedef struct riscv_mem rv_mem;
+typedef struct riscv_elf rv_elf;
 
 enum {
     BOOTROM,
@@ -31,8 +32,15 @@ static const rv_mem_entry mem_map[] = {
 
 #define MEM_SIZE (0x100000000) //(mem_map[KERNBASE].base + mem_map[KERNBASE].size)
 
+/* For riscv-compliance */
+struct riscv_elf {
+    u32 start;
+    u32 end;
+};
+
 struct riscv_mem {
     u8 *mem;
+    rv_elf sig;
 };
 
 s32 read_mem(rv_mem *mem, u32 addr, u8 byte);

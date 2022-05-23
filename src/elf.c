@@ -1,4 +1,5 @@
 #include "elf.h"
+#include "mem.h"
 
 s8 is_elf_valid(struct Elf32_Ehdr *e_hdr)
 {
@@ -26,7 +27,7 @@ s8 is_elf_valid(struct Elf32_Ehdr *e_hdr)
     return true;
 }
 
-s8 parse_elf(u8 *mem, u8 *elf_file, u32 *entry)
+s8 parse_elf(rv_mem *mem, u8 *elf_file, u32 *entry)
 {
     struct Elf32_Ehdr *e_hdr = (struct Elf32_Ehdr *)elf_file;
 
@@ -34,6 +35,7 @@ s8 parse_elf(u8 *mem, u8 *elf_file, u32 *entry)
         return false;
     }
 
+#if CONFIG_ARCH_TEST
     /* Get ELF string table */
     struct Elf32_Shdr *e_shdr = (struct Elf32_Shdr *)(elf_file +
                                                 e_hdr->e_shoff +
@@ -69,14 +71,19 @@ s8 parse_elf(u8 *mem, u8 *elf_file, u32 *entry)
                 //ELF_DBG("sym_name : %s\n", sym_name);
                 if (!strcmp(sym_name, "begin_signature")) {
                     // This is for riscv-compliance
+                    mem->sig.start = symtab_hdr[i].st_value;
+                    ELF_DBG("begin_signature : 0x%08x\n", mem->sig.start);
                     continue;
                 }
                 if (!strcmp(sym_name, "end_signature")) {
                     // This is for riscv-compliance
+                    mem->sig.end = symtab_hdr[i].st_value;
+                    ELF_DBG("end_signature : 0x%08x\n", mem->sig.end);
                 }
             }
         }
     }
+#endif
 
     /* ELF load */
     *entry = e_hdr->e_entry;
@@ -105,9 +112,9 @@ s8 parse_elf(u8 *mem, u8 *elf_file, u32 *entry)
         u32 start  = e_phdr->p_paddr;
         u32 size   = e_phdr->p_filesz;
         u32 offset = e_phdr->p_offset;
-        printf("start : 0x%08x, size : 0x%08x, offset : 0x%08x\n",
-               start, size, offset);
-        memcpy(mem + start, elf_file + offset, size);
+        //printf("start : 0x%08x, size : 0x%08x, offset : 0x%08x\n",
+        //       start, size, offset);
+        memcpy(mem->mem + start, elf_file + offset, size);
         ELF_DBG("\n");
     }
 

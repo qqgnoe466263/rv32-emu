@@ -44,7 +44,7 @@ s8 load_rv_elf(rv_emu *emu, u8 *filename)
         return false;
     }
 
-    if (!parse_elf(emu->vcpu.bus.vmem.mem, buf, &emu->vcpu.pc)) {
+    if (!parse_elf(&emu->vcpu.bus.vmem, buf, &emu->vcpu.pc)) {
         free(buf);
         return false;
     }

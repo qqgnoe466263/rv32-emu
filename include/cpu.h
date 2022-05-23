@@ -10,6 +10,7 @@ typedef struct riscv_instruction    rv_instr;
 
 enum {
     I_TYPE_LOAD  = 0b00000011,
+    I_TYPE_FENCE = 0b00001111,
     I_TYPE       = 0b00010011,
     U_TYPE_AUIPC = 0b00010111,
     S_TYPE       = 0b00100011,

@@ -6,3 +6,4 @@
 *.elf
 rv_emu
 tags
+cscope*

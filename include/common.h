@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include "debug.h"
 
+#define CONFIG_ARCH_TEST 1
+
 typedef unsigned char   u8;
 typedef signed char     s8;
 typedef unsigned short  u16;

@@ -3,21 +3,10 @@
 
 #include "riscv.h"
 
-void unit_test_rw_mem_func(rv_emu *emu)
-{
-    s32 val = 0;
-    u32 test_addr = 0x10000001;
-
-    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 1);
-    val = read_bus(&emu->vcpu.bus, test_addr, 1);
-    printf("[UT] val = 0x%x\n", val);
-    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 2);
-    val = read_bus(&emu->vcpu.bus, test_addr, 2);
-    printf("[UT] val = 0x%x\n", val);
-    write_bus(&emu->vcpu.bus, test_addr, 0xdeadbeef, 4);
-    val = read_bus(&emu->vcpu.bus, test_addr, 4);
-    printf("[UT] val = 0x%x\n", val);
-}
+#if CONFIG_ARCH_TEST
+static char signature_out_file[256];
+static bool opt_arch_test = false;
+#endif
 
 void dump_reg(rv_cpu *cpu)
 {
@@ -42,23 +31,34 @@ int main(int argc, char **argv)
         return false;
     }
 
+#if CONFIG_ARCH_TEST
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--arch-test")) {
+            opt_arch_test = true;
+            strncpy(signature_out_file, argv[i+1], 255);
+            signature_out_file[255] = '\0';
+            break;
+        }
+    }
+#endif
+
     rv_emu *emu = init_emu();
     if (!emu)
         return false;
 
-#if 0
-    unit_test_rw_mem_func(emu);
-#endif
-
     if (!load_rv_elf(emu, argv[1]))
         goto err;
 
-#if 1
     while (1) {
         /* x0 is always 0 */
         emu->vcpu.xreg[0] = 0;
         fetch(&emu->vcpu);
         decode(&emu->vcpu);
+
+        if (emu->vcpu.decode_instr.type == I_TYPE_ENV) {
+            break;
+        }
+
         execute(&emu->vcpu);
 
         if (emu->vcpu.pc_sel)
@@ -67,8 +67,25 @@ int main(int argc, char **argv)
             emu->vcpu.pc += 4;
     }
 
-    dump_reg(&emu->vcpu);
+#if CONFIG_ARCH_TEST
+    if (opt_arch_test) {
+        FILE *f = fopen(signature_out_file, "w");
+        if (!f) {
+            return -1;
+        }
+        u32 start = emu->vcpu.bus.vmem.sig.start;
+        u32 end   = emu->vcpu.bus.vmem.sig.end;
+
+        for (int i = start; i < end; i += 4) {
+            u32 val = read_mem(&emu->vcpu.bus.vmem, i, 4) & 0xffffffff;
+            //printf("0x%08x\n", val);
+            fprintf(f, "%08x\n", val);
+        }
+        fclose(f);
+    }
 #endif
+
+    //dump_reg(&emu->vcpu);
 
 err:
     exit_emu(emu);
