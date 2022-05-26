@@ -35,7 +35,7 @@ void exec_slli(rv_exec_ctx ctx)
 
 void exec_slti(rv_exec_ctx ctx)
 {
-    *ctx.rd = (*ctx.rs1 < ctx.imm) ? 1 : 0;
+    *ctx.rd = ((s32)*ctx.rs1 < (s32)ctx.imm) ? 1 : 0;
 }
 
 void exec_sltiu(rv_exec_ctx ctx)
@@ -54,7 +54,7 @@ void exec_srli_srai(rv_exec_ctx ctx)
     u32 imm0_4 = ctx.imm & 0x1f;
 
     if (imm5_11 == 0x20) { // srai
-        *ctx.rd = *ctx.rs1 >> imm0_4;
+        *ctx.rd = (s32)(*ctx.rs1) >> imm0_4;
     } else { // srli
         *ctx.rd = *ctx.rs1 >> imm0_4;
         //EXECUTE_DBG("%s, Not Imp", __func__);
@@ -89,7 +89,7 @@ void exec_sll(rv_exec_ctx ctx)
 
 void exec_slt(rv_exec_ctx ctx)
 {
-    *ctx.rd = (*ctx.rs1 < *ctx.rs2) ? 1 : 0;
+    *ctx.rd = ((s32)*ctx.rs1 < (s32)*ctx.rs2) ? 1 : 0;
 }
 
 void exec_sltu(rv_exec_ctx ctx)
@@ -106,7 +106,7 @@ void exec_srl_sra(rv_exec_ctx ctx)
 {
 
     if (ctx.func7 == 0x20) { // sra
-        *ctx.rd = *ctx.rs1 >> *ctx.rs2;
+        *ctx.rd = (s32)(*ctx.rs1) >> *ctx.rs2;
     } else { // srl
         *ctx.rd = *ctx.rs1 >> *ctx.rs2;
         //EXECUTE_DBG("%s, Not Imp", __func__);
@@ -148,12 +148,12 @@ void exec_sw(rv_exec_ctx ctx)
 
 void exec_lb(rv_exec_ctx ctx)
 {
-    *ctx.rd = (u8)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 1);
+    *ctx.rd = (s8)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 1);
 }
 
 void exec_lh(rv_exec_ctx ctx)
 {
-    *ctx.rd = (u16)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 2);
+    *ctx.rd = (s16)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 2);
 }
 
 void exec_lw(rv_exec_ctx ctx)
@@ -207,7 +207,7 @@ void exec_bge(rv_exec_ctx ctx)
 
 void exec_bltu(rv_exec_ctx ctx)
 {
-    if ((s32)*ctx.rs1 < (s32)*ctx.rs2) {
+    if (*ctx.rs1 < *ctx.rs2) {
         ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
@@ -215,7 +215,7 @@ void exec_bltu(rv_exec_ctx ctx)
 
 void exec_bgeu(rv_exec_ctx ctx)
 {
-   if ((s32)*ctx.rs1 >= (s32)*ctx.rs2) {
+   if (*ctx.rs1 >= *ctx.rs2) {
         ctx.cpu->pc += ctx.imm;
         ctx.cpu->pc_sel = 1;
     }
