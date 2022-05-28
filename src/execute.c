@@ -279,18 +279,18 @@ void exec_jalr(rv_exec_ctx ctx)
     ctx.cpu->pc = (tmp + ctx.imm);
     ctx.cpu->pc_sel = 1;
 
-    if (ctx.cpu->pc == 0x0) {
-        printf("Execute done\n");
-        exit(0);
-    }
-
 #if CONFIG_FETCH_DBG
     // TODO : Valid if rd is ra
-    if (ctx.rd == &ctx.cpu->xreg[10])
+    if (ctx.rs1 == &ctx.cpu->xreg[1])
         FETCH_DBG("Ret to Func_0x%x, ret_val : 0x%x\n",
                   ctx.cpu->pc,
                   ctx.cpu->xreg[10]);
 #endif
+
+    if (ctx.cpu->pc == 0x0) {
+        printf("Execute done\n");
+        exit(0);
+    }
 }
 
 /* J type */
@@ -649,9 +649,10 @@ static void exec_j(rv_cpu *cpu)
 
 #if CONFIG_FETCH_DBG
     if (instr.j.rd == 1) {
-        FETCH_DBG("Jump to Func_0x%x(arg0:0x%x)\n",
+        FETCH_DBG("Jump to Func_0x%x(a0:0x%x, a1:0x%x)\n",
                   ctx.cpu->pc + ctx.imm,
-                  ctx.cpu->xreg[10]);
+                  ctx.cpu->xreg[10],
+                  ctx.cpu->xreg[11]);
     }
 #endif
 
