@@ -19,8 +19,21 @@ enum {
     B_TYPE       = 0b01100011,
     I_TYPE_JARL  = 0b01100111,
     J_TYPE       = 0b01101111,
-    I_TYPE_ENV   = 0b01110011,
+    I_TYPE_SYS   = 0b01110011,
 } op_type;
+
+enum {
+    MSTATUS = 0x300,
+    MISA = 0x301,
+    MIE = 0x304,
+    MTVEC = 0x305,
+    MSCRATCH = 0x340,
+    MEPC = 0x341,
+    MCAUSE = 0x342,
+    MTVAL = 0x343,
+    MIP = 0x344,
+    MHARTID = 0xf14,
+};
 
 typedef struct riscv_instruction {
     u8 type; // opcode
@@ -91,8 +104,13 @@ typedef struct riscv_exec {
 } rv_exec;
 
 struct riscv_cpu {
+    /* General Purpose Registers */
     u32 xreg[32];
+    /* Control and Status Registers */
+    u32 csr[0xfff];
+    /* Program Counter*/
     u32 pc;
+
     rv_bus bus;
 
     /* CPU context */

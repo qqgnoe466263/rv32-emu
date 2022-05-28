@@ -4,10 +4,10 @@
 #include "common.h"
 
 #define CONFIG_RW_DBG        0
-#define CONFIG_FETCH_DBG     1
+#define CONFIG_FETCH_DBG     0
 #define CONFIG_DECODE_DBG    0
 #define CONFIG_EXECUTE_DBG   0
-#define CONFIG_ELF_DBG       1
+#define CONFIG_ELF_DBG       0
 
 #if CONFIG_RW_DBG
 #define RW_DBG(...) fprintf(stdout, __VA_ARGS__);

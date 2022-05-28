@@ -2,6 +2,7 @@
 #define _MEM_H_
 
 #include "common.h"
+#include "uart.h"
 
 typedef struct riscv_memory_entry rv_mem_entry;
 typedef struct riscv_mem rv_mem;
@@ -30,7 +31,8 @@ static const rv_mem_entry mem_map[] = {
     [KERNBASE] = {0x80000000, 0x10001000}, /* 256MB */
 };
 
-#define MEM_SIZE (0x100000000) //(mem_map[KERNBASE].base + mem_map[KERNBASE].size)
+#define MEM_SIZE        (0x100000000)
+#define UART0_BASE      (0x10000000)
 
 /* For riscv-compliance */
 struct riscv_elf {

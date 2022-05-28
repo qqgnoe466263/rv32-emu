@@ -10,7 +10,7 @@ char *optype[] = {
     [B_TYPE]       = "B_TYPE",
     [I_TYPE_JARL]  = "I_TYPE_JARL",
     [J_TYPE]       = "J_TYPE",
-    [I_TYPE_ENV]   = "I_TYPE_ENV",
+    [I_TYPE_SYS]   = "I_TYPE_SYS",
 };
 
 #if CONFIG_DECODE_DBG
@@ -76,7 +76,7 @@ void decode(rv_cpu *cpu)
     case I_TYPE_LOAD:
     case I_TYPE:
     case I_TYPE_JARL:
-    case I_TYPE_ENV:
+    case I_TYPE_SYS:
         decode_i_type_instr(cpu->decode_instr);
         break;
     case R_TYPE:

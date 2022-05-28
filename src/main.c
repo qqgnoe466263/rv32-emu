@@ -24,6 +24,20 @@ void dump_reg(rv_cpu *cpu)
     printf("\n");
 }
 
+/* TODO : PLIC */
+static void uart_handler(rv_cpu *cpu)
+{
+    u8 *uart0_lsr = (u8 *)cpu->bus.vmem.mem + UART0_LSR;
+    u8 *uart0_thr = (u8 *)cpu->bus.vmem.mem + UART0_THR;
+
+    if (*uart0_thr) {
+        *uart0_lsr &= ~(UART0_LSR_THR_EMPTY | UART0_LSR_THR_SR_EMPTY);
+        printf("%c", *uart0_thr);
+        *uart0_thr = '\x00';
+        *uart0_lsr = (UART0_LSR_THR_EMPTY | UART0_LSR_THR_SR_EMPTY);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -52,13 +66,17 @@ int main(int argc, char **argv)
     while (1) {
         /* x0 is always 0 */
         emu->vcpu.xreg[0] = 0;
+        /* UART0 Output */
+        uart_handler(&emu->vcpu);
+
         fetch(&emu->vcpu);
         decode(&emu->vcpu);
 
-        if (emu->vcpu.decode_instr.type == I_TYPE_ENV) {
-            break;
-        }
-
+#if CONFIG_ARCH_TEST
+        if (emu->vcpu.decode_instr.type == I_TYPE_SYS)
+            if (emu->vcpu.decode_instr.i.func3 == 0x0)
+                break;
+#endif
         execute(&emu->vcpu);
 
         if (emu->vcpu.pc_sel)

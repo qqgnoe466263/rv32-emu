@@ -1,5 +1,6 @@
 #include "riscv.h"
 #include "elf.h"
+#include "uart.h"
 
 rv_emu *init_emu()
 {
@@ -10,6 +11,10 @@ rv_emu *init_emu()
     emu->vcpu.bus.vmem.mem = (u8 *)malloc(MEM_SIZE);
     if (!emu->vcpu.bus.vmem.mem)
         return NULL;
+
+    /* Init UART0 */
+    write_mem(&emu->vcpu.bus.vmem, UART0_LSR,
+             (UART0_LSR_THR_EMPTY | UART0_LSR_THR_SR_EMPTY), 4);
 
     return emu;
 }

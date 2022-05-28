@@ -8,6 +8,7 @@ char *reg_abi[] = {
 static void exec_i(rv_cpu *cpu);
 static void exec_i_load(rv_cpu *cpu);
 static void exec_i_jalr(rv_cpu *cpu);
+static void exec_i_sys(rv_cpu *cpu);
 static void exec_r(rv_cpu *cpu);
 static void exec_s(rv_cpu *cpu);
 static void exec_b(rv_cpu *cpu);
@@ -171,6 +172,51 @@ void exec_lhu(rv_exec_ctx ctx)
     *ctx.rd = (u16)read_bus(&ctx.cpu->bus, *ctx.rs1 + ctx.imm, 2);
 }
 
+/* I type (sys) */
+
+void exec_ecall_ebreak(rv_exec_ctx ctx)
+{
+    printf("%s, not imp\n", __func__);
+    exit(0);
+}
+
+void exec_csrrw(rv_exec_ctx ctx)
+{
+    *ctx.rd = ctx.cpu->csr[ctx.imm & 0xfff];
+    ctx.cpu->csr[ctx.imm & 0xfff] = *ctx.rs1;
+}
+
+void exec_csrrs(rv_exec_ctx ctx)
+{
+    u32 tmp = ctx.cpu->csr[ctx.imm & 0xfff];
+    *ctx.rs1 |= tmp;
+    *ctx.rd = tmp;
+}
+
+void exec_csrrc(rv_exec_ctx ctx)
+{
+    *ctx.rd = ctx.cpu->csr[ctx.imm & 0xfff];
+    *ctx.rs1 &= ~(*ctx.rd);
+}
+
+void exec_csrrwi(rv_exec_ctx ctx)
+{
+    printf("%s, not imp\n", __func__);
+    exit(0);
+}
+
+void exec_csrrsi(rv_exec_ctx ctx)
+{
+    printf("%s, not imp\n", __func__);
+    exit(0);
+}
+
+void exec_csrrci(rv_exec_ctx ctx)
+{
+    printf("%s, not imp\n", __func__);
+    exit(0);
+}
+
 /* B type */
 
 void exec_beq(rv_exec_ctx ctx)
@@ -308,6 +354,16 @@ rv_exec i_jalr_exec_entry[] = {
     [0x0] = {&exec_jalr},
 };
 
+rv_exec i_sys_exec_entry[] = {
+    [0x0] = {&exec_ecall_ebreak},
+    [0x1] = {&exec_csrrw},
+    [0x2] = {&exec_csrrs},
+    [0x3] = {&exec_csrrc},
+    [0x5] = {&exec_csrrwi},
+    [0x6] = {&exec_csrrsi},
+    [0x7] = {&exec_csrrci},
+};
+
 rv_exec b_exec_entry[] = {
     [0x0] = {&exec_beq},
     [0x1] = {&exec_bne},
@@ -333,7 +389,8 @@ void execute(rv_cpu *cpu)
     case I_TYPE_JARL:
         exec_i_jalr(cpu);
         break;
-    case I_TYPE_ENV:
+    case I_TYPE_SYS:
+        exec_i_sys(cpu);
         break;
     case R_TYPE:
         exec_r(cpu);
@@ -441,6 +498,34 @@ static void exec_i_jalr(rv_cpu *cpu)
              reg_abi[instr.i.rs1], *ctx.rs1, ctx.imm);
 
     i_jalr_exec_entry[instr.i.func3].exec(ctx);
+}
+
+static void exec_i_sys(rv_cpu *cpu)
+{
+    rv_exec_ctx ctx = {0};
+    rv_instr instr = cpu->decode_instr;
+    ctx.imm = sign_extend(instr.i.imm, 12);
+    ctx.rd = &cpu->xreg[instr.i.rd];
+    ctx.rs1 = &cpu->xreg[instr.i.rs1];
+    ctx.cpu = cpu;
+
+    if (instr.i.func3 > ARRAY_SIZE(i_sys_exec_entry)) {
+        fprintf(stdout, "%s, FUNC3(0x%x) Not Imp\n",
+                __func__, instr.i.func3);
+        exit(-1);
+    }
+
+    if (!i_sys_exec_entry[instr.i.func3].exec) {
+        fprintf(stdout, "%s, FUNC3(0x%x) Not Imp\n",
+                __func__, instr.i.func3);
+        exit(-1);
+    }
+
+    EXECUTE_DBG("%12s, rd(%s) : 0x%08x, rs1(%s) : 0x%08x, imm : 0x%08x\n",
+             __func__, reg_abi[instr.i.rd], *ctx.rd, 
+             reg_abi[instr.i.rs1], *ctx.rs1, ctx.imm);
+
+    i_sys_exec_entry[instr.i.func3].exec(ctx);
 }
 
 static void exec_r(rv_cpu *cpu)
