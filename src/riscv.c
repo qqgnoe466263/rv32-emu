@@ -1,6 +1,7 @@
 #include "riscv.h"
 #include "elf.h"
 #include "uart.h"
+#include "bus.h"
 
 rv_emu *init_emu()
 {
@@ -55,5 +56,49 @@ s8 load_rv_elf(rv_emu *emu, u8 *filename)
     }
 
     free(buf);
+    return true;
+}
+
+void dump_csr(rv_emu *emu)
+{
+    printf("%-10s = 0x%-8x, \n", "MSTATUS", emu->vcpu.csr[MSTATUS]);
+    printf("%-10s = 0x%-8x, \n", "MSTVEC", emu->vcpu.csr[MTVEC]);
+    printf("%-10s = 0x%-8x, \n", "MEPC", emu->vcpu.csr[MEPC]);
+    printf("%-10s = 0x%-8x, \n", "MCAUSE", emu->vcpu.csr[MCAUSE]);
+    printf("%-10s = 0x%-8x, \n", "MIE", emu->vcpu.csr[MIE]);
+}
+
+static int cycle = 0;
+s8 tick(rv_emu *emu)
+{
+    if (cycle++ < 15)
+        return 1;
+
+    u32 *mtime = (u32 *)(emu->vcpu.bus.vmem.mem + CLINT_MTIME);
+    u32 *mtimecmp = (u32 *)(emu->vcpu.bus.vmem.mem + CLINT_MTIMECMP);
+
+    emu->vcpu.csr[TIME]++;
+    *mtime = *mtime + 1;
+    cycle = 0;
+
+    if (*mtimecmp != 0 && *mtime >= *mtimecmp) {
+        emu->vcpu.csr[MIP] |= MIP_MTIP;
+        /* Workaround for fixing the repeat timer interrupt */
+        *mtime = *mtime - (10000000 / 10000); // about 20m sec in qemu;
+    }
+
+    u32 pending = emu->vcpu.csr[MIE] & emu->vcpu.csr[MIP];
+
+    if (pending & MIP_MTIP) {
+        if (emu->vcpu.csr[MSTATUS] & MSTATUS_MIE) {
+            emu->vcpu.csr[MEPC] = emu->vcpu.pc;
+            emu->vcpu.pc = emu->vcpu.csr[MTVEC];
+            emu->vcpu.csr[MCAUSE] = (0x80000007);
+            emu->vcpu.csr[MSTATUS] &= ~MSTATUS_MIE;
+
+            emu->vcpu.csr[MIP] &= ~MIP_MTIP;
+        }
+    }
+
     return true;
 }

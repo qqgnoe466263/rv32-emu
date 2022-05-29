@@ -22,16 +22,14 @@ struct riscv_memory_entry {
     u32 size;
 };
 
-static const rv_mem_entry mem_map[] = {
-    [BOOTROM]  = {0x00001000, 0xf000},
-    [CLINT]    = {0x02000000, 0x10000},
-    [PLIC]     = {0x0c000000, 0x10000},
-    [UART0]    = {0x10000000, 0x100},
-    [VIRTIO]   = {0x10001000, 0x1000},
-    [KERNBASE] = {0x80000000, 0x10001000}, /* 256MB */
-};
-
 #define MEM_SIZE        (0x100000000)
+
+/* CLINT */
+#define CLINT_BASE      (0x02000000)
+#define CLINT_MTIMECMP  (CLINT_BASE + 0x4000 + 4*(0)) // Hartid
+#define CLINT_MTIME 	(CLINT_BASE + 0xBFF8) // cycles since boot.
+
+/* UART */
 #define UART0_BASE      (0x10000000)
 
 /* For riscv-compliance */

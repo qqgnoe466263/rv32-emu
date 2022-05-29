@@ -176,8 +176,14 @@ void exec_lhu(rv_exec_ctx ctx)
 
 void exec_ecall_ebreak(rv_exec_ctx ctx)
 {
-    printf("%s, not imp\n", __func__);
-    exit(0);
+    /* MRET */
+    if (ctx.imm == 0x302) {
+        ctx.cpu->pc = ctx.cpu->csr[MEPC];
+        ctx.cpu->csr[MSTATUS] |= MSTATUS_MIE;
+    } else {
+        printf("%s, not imp\n", __func__);
+        exit(0);
+    }
 }
 
 void exec_csrrw(rv_exec_ctx ctx)
@@ -283,11 +289,6 @@ void exec_jalr(rv_exec_ctx ctx)
                   ctx.cpu->pc,
                   ctx.cpu->xreg[10]);
 #endif
-
-    if (ctx.cpu->pc == 0x0) {
-        printf("Execute done\n");
-        exit(0);
-    }
 }
 
 /* J type */
@@ -466,6 +467,12 @@ void execute(rv_cpu *cpu)
     case I_TYPE_SYS:
         exec_i_sys(cpu);
         break;
+#if CONFIG_RV32A_EXTENSION
+    case RV32A_TYPE:
+        NOT_IMP
+        //exec_r_a_ext(cpu);
+        break;
+#endif
     case R_TYPE:
         exec_r(cpu);
         break;

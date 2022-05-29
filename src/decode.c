@@ -79,6 +79,9 @@ void decode(rv_cpu *cpu)
     case I_TYPE_SYS:
         decode_i_type_instr(cpu->decode_instr);
         break;
+#if CONFIG_RV32A_EXTENSION
+    case RV32A_TYPE:
+#endif
     case R_TYPE:
         decode_r_type_instr(cpu->decode_instr);
         break;

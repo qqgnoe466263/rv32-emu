@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "bus.h"
+#include "csr.h"
 
 typedef struct riscv_register       rv_reg;
 typedef struct riscv_cpu            rv_cpu;
@@ -14,6 +15,9 @@ enum {
     I_TYPE       = 0b00010011,
     U_TYPE_AUIPC = 0b00010111,
     S_TYPE       = 0b00100011,
+#if CONFIG_RV32A_EXTENSION
+    RV32A_TYPE   = 0b00101111,
+#endif
     R_TYPE       = 0b00110011,
     U_TYPE_LUI   = 0b00110111,
     B_TYPE       = 0b01100011,
@@ -21,19 +25,6 @@ enum {
     J_TYPE       = 0b01101111,
     I_TYPE_SYS   = 0b01110011,
 } op_type;
-
-enum {
-    MSTATUS = 0x300,
-    MISA = 0x301,
-    MIE = 0x304,
-    MTVEC = 0x305,
-    MSCRATCH = 0x340,
-    MEPC = 0x341,
-    MCAUSE = 0x342,
-    MTVAL = 0x343,
-    MIP = 0x344,
-    MHARTID = 0xf14,
-};
 
 typedef struct riscv_instruction {
     u8 type; // opcode

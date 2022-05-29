@@ -16,5 +16,6 @@ void exit_emu(rv_emu *emu);
 
 s8 load_rv_elf(rv_emu *emu, u8 *filename);
 
+s8 tick(rv_emu *emu);
 
 #endif

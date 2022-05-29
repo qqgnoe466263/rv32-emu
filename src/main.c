@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     if (!load_rv_elf(emu, argv[1]))
         goto err;
 
-    while (1) {
+    while (tick(emu)) {
         /* x0 is always 0 */
         emu->vcpu.xreg[0] = 0;
         /* UART0 Output */
