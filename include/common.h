@@ -7,7 +7,8 @@
 #include <stdbool.h>
 #include "debug.h"
 
-#define CONFIG_ARCH_TEST 0
+#define CONFIG_ARCH_TEST            0
+#define CONFIG_RV32M_EXTENSION      1
 
 typedef unsigned char   u8;
 typedef signed char     s8;

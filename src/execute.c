@@ -201,20 +201,17 @@ void exec_csrrc(rv_exec_ctx ctx)
 
 void exec_csrrwi(rv_exec_ctx ctx)
 {
-    printf("%s, not imp\n", __func__);
-    exit(0);
+    NOT_IMP
 }
 
 void exec_csrrsi(rv_exec_ctx ctx)
 {
-    printf("%s, not imp\n", __func__);
-    exit(0);
+    NOT_IMP
 }
 
 void exec_csrrci(rv_exec_ctx ctx)
 {
-    printf("%s, not imp\n", __func__);
-    exit(0);
+    NOT_IMP
 }
 
 /* B type */
@@ -314,6 +311,70 @@ void exec_auipc(rv_exec_ctx ctx)
     *ctx.rd = ctx.cpu->pc + ctx.imm;
 }
 
+/* RV32M */
+#if CONFIG_RV32M_EXTENSION
+void exec_mul(rv_exec_ctx ctx)
+{
+    *ctx.rd = (s32)*ctx.rs1 * (s32)*ctx.rs2;
+}
+
+void exec_mulh(rv_exec_ctx ctx)
+{
+    s32 rs1 = (s32)*ctx.rs1;
+    s32 rs2 = (s32)*ctx.rs2;
+    long tmp = (long)rs1 * (long)rs2;
+    *ctx.rd = tmp >> 32;
+}
+
+void exec_mulhsu(rv_exec_ctx ctx)
+{
+    s32 rs1 = (s32)*ctx.rs1;
+    u32 rs2 = *ctx.rs2;
+    long tmp = (long)rs1 * (unsigned long)rs2;
+    *ctx.rd = tmp >> 32;
+}
+
+void exec_mulhu(rv_exec_ctx ctx)
+{
+    u32 rs1 = *ctx.rs1;
+    u32 rs2 = *ctx.rs2;
+    unsigned long tmp = (unsigned long)rs1 * (unsigned long)rs2;
+    *ctx.rd = tmp >> 32;
+}
+
+void exec_div(rv_exec_ctx ctx)
+{
+    s32 dividend = (s32)*ctx.rs1;
+    s32 divisor = (s32)*ctx.rs2;
+
+    if (!divisor)
+        *ctx.rd = -1;
+    else
+        *ctx.rd = dividend / divisor;
+}
+
+void exec_divu(rv_exec_ctx ctx)
+{
+    u32 dividend = *ctx.rs1;
+    u32 divisor = *ctx.rs2;
+
+    if (!divisor)
+        *ctx.rd = -1;
+    else
+        *ctx.rd = dividend / divisor;
+}
+
+void exec_rem(rv_exec_ctx ctx)
+{
+    *ctx.rd = (s32)*ctx.rs1 % (s32)*ctx.rs2;
+}
+
+void exec_remu(rv_exec_ctx ctx)
+{
+    *ctx.rd = *ctx.rs1 % *ctx.rs2;
+}
+#endif
+
 rv_exec i_exec_entry[] = {
     [0x0] = {&exec_addi},
     [0x1] = {&exec_slli},
@@ -335,6 +396,19 @@ rv_exec r_exec_entry[] = {
     [0x6] = {&exec_or},
     [0x7] = {&exec_and},
 };
+
+#if CONFIG_RV32M_EXTENSION
+rv_exec rv32m_exec_entry[] = {
+    [0x0] = {&exec_mul},
+    [0x1] = {&exec_mulh},
+    [0x2] = {&exec_mulhsu},
+    [0x3] = {&exec_mulhu},
+    [0x4] = {&exec_div},
+    [0x5] = {&exec_divu},
+    [0x6] = {&exec_rem},
+    [0x7] = {&exec_remu},
+};
+#endif
 
 rv_exec s_exec_entry[] = {
     [0x0] = {&exec_sb},
@@ -528,6 +602,27 @@ static void exec_i_sys(rv_cpu *cpu)
     i_sys_exec_entry[instr.i.func3].exec(ctx);
 }
 
+static void exec_r_m_ext(rv_exec_ctx ctx, u8 func3)
+{
+    if (func3 > ARRAY_SIZE(rv32m_exec_entry)) {
+        fprintf(stdout, "%s, RV32M FUNC3(0x%x) Not Imp\n",
+                __func__, func3);
+        exit(-1);
+    }
+
+    if (!rv32m_exec_entry[func3].exec) {
+        fprintf(stdout, "%s, RV32M FUNC3(0x%x) Not Imp\n",
+                __func__, func3);
+        exit(-1);
+    }
+
+    EXECUTE_DBG("%12s, rd(%s) : 0x%08x, rs1(%s) : 0x%08x, rs2(%s) : 0x%08x\n",
+             __func__, reg_abi[instr.r.rd], *ctx.rd, reg_abi[instr.r.rs1],
+             *ctx.rs1, reg_abi[instr.r.rs2], *ctx.rs2);
+
+    rv32m_exec_entry[func3].exec(ctx);
+}
+
 static void exec_r(rv_cpu *cpu)
 {
     rv_exec_ctx ctx = {0};
@@ -536,6 +631,18 @@ static void exec_r(rv_cpu *cpu)
     ctx.rs1 = &cpu->xreg[instr.r.rs1];
     ctx.rs2 = &cpu->xreg[instr.r.rs2];
     ctx.func7 = instr.r.func7;
+
+#if CONFIG_RV32M_EXTENSION
+    if (instr.r.func7 == 0x1) {
+        exec_r_m_ext(ctx, instr.r.func3);
+        return;
+    }
+#else
+    if (instr.r.func7 == 0x1) {
+        printf("Not supported RV32M extension\n");
+        exit(0);
+    }
+#endif
 
     if (instr.r.func3 > ARRAY_SIZE(r_exec_entry)) {
         fprintf(stdout, "%s, FUNC3(0x%x) Not Imp\n",

@@ -39,5 +39,10 @@
 #define ELF_DBG(...);
 #endif
 
+#define NOT_IMP \
+    do { \
+        fprintf(stdout, "Not Imp : %s\n", __func__); \
+        exit(0); \
+    } while (0);
 
 #endif /* _DEBUG_H_ */
