@@ -6,9 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CONFIG_RV32M_EXTENSION 1
-#define CONFIG_RV32A_EXTENSION 1
-
 typedef unsigned char u8;
 typedef signed char s8;
 typedef unsigned short u16;

@@ -11,6 +11,11 @@
 #define RAM_SIZE (1024 * 1024 * 128)
 #define RAM_BASE (0x80000000)
 
+#define CLINT_BASE (0x2000000)
+#define CLINT_SIZE (0x10000)
+#define CLINT_MTIMECMP (CLINT_BASE + 0x4000)
+#define CLINT_MTIME (CLINT_BASE + 0xbff8)
+
 #define RANGE_CHECK(x, minx, size) \
     ((int) ((x - minx) | (minx + size - 1 - x)) >= 0)
 
@@ -27,11 +32,59 @@ struct rv32_sig {
 
 typedef enum {
     OK = -1,
+    INSTRUCTION_ADDRESS_MISALIGNED = 0,
     INSTRUCTION_ACCESS_FAULT = 1,
     ILLEGAL_INSTRUCTION = 2,
+    BREAKPOINT = 3,
+    LOAD_ADDRESS_MISALIGNED = 4,
     LOAD_ACCESS_FAULT = 5,
-    STORE_AMO_ACCESS_FAULT = 7,  // Atomic Memory Operation
+    STORE_AMO_ADDRESS_MISALIGNED = 6,
+    STORE_AMO_ACCESS_FAULT = 7,
+    INSTRUCTION_PAGE_FAULT = 12,
+    LOAD_PAGE_FAULT = 13,
+    STORE_AMO_PAGE_FAULT = 15,
 } exception_t;
+
+typedef enum {
+    NONE = -1,
+    SUPERVISOR_SOFTWARE_INTERRUPT = 1,
+    MACHINE_SOFTWARE_INTERRUPT = 3,
+    SUPERVISOR_TIMER_INTERRUPT = 5,
+    MACHINE_TIMER_INTERRUPT = 7,
+    SUPERVISOR_EXTERNAL_INTERRUPT = 9,
+    MACHINE_EXTERNAL_INTERRUPT = 11,
+} interrupt_t;
+
+/* M mode CSRs */
+enum {
+    MSTATUS = 0x300,
+    MEDELEG = 0x302,
+    MIDELEG,
+    MIE,  // Machine Interrupt Enable
+    MTVEC = 0x305,
+    MEPC = 0x341,
+    MCAUSE,
+    MTVAL,
+    MIP,  // Machine Interrupt Pending
+};
+
+/* MSTATUS */
+enum {
+    MSTATUS_MIE = (1 << 3),
+    MSTATUS_MPIE = (1 << 7),  // Save Previous MSTATUS_MIE value
+};
+
+/* MIE */
+enum {
+    MIE_MTIE = (1 << 7),
+};
+
+/* MIP */
+enum {
+    MIP_MSIP = (1 << 3),
+    MIP_MTIP = (1 << 7),
+    MIP_MEIP = (1 << 11),
+};
 
 #define UART_BASE (0x10000000)
 #define UART_SIZE (0x100)
@@ -51,9 +104,15 @@ struct rv32_uart {
     pthread_cond_t cond;
 };
 
+struct rv32_clint {
+    u32 mtime;
+    u32 mtimecmp;
+};
+
 struct rv32_bus {
     u8 *ram;
     struct rv32_uart *uart0;
+    struct rv32_clint *clint;
 
 #if CONFIG_ARCH_TEST
     struct rv32_sig sig;
@@ -117,6 +176,44 @@ exception_t write_uart(struct rv32_uart *uart, u32 addr, u32 size, u32 value)
     return OK;
 }
 
+exception_t read_clint(struct rv32_clint *clint,
+                       u32 addr,
+                       u32 size,
+                       u32 *result)
+{
+    if (size != 32)
+        return LOAD_ACCESS_FAULT;
+
+    switch (addr) {
+    case CLINT_MTIMECMP:
+        *result = clint->mtimecmp;
+        break;
+    case CLINT_MTIME:
+        *result = clint->mtime;
+        break;
+    default:
+        *result = 0;
+    }
+
+    return OK;
+}
+
+exception_t write_clint(struct rv32_clint *clint, u32 addr, u32 size, u32 value)
+{
+    if (size != 32)
+        return STORE_AMO_ACCESS_FAULT;
+
+    switch (addr) {
+    case CLINT_MTIMECMP:
+        clint->mtimecmp = value;
+        break;
+    case CLINT_MTIME:
+        clint->mtime = value;
+        break;
+    }
+
+    return OK;
+}
 exception_t read_ram(u8 *ram, u32 addr, u32 size, u32 *result)
 {
     u32 idx = (addr - RAM_BASE), tmp = 0;
@@ -156,6 +253,8 @@ exception_t write_ram(u8 *ram, u32 addr, u32 size, u32 value)
 
 exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
 {
+    if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
+        return read_clint(bus->clint, addr, size, result);
     /* UART RX */
     if (RANGE_CHECK(addr, UART_BASE, UART_SIZE))
         return read_uart(bus->uart0, addr, size, result);
@@ -167,6 +266,8 @@ exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
 
 exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
 {
+    if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
+        return write_clint(bus->clint, addr, size, value);
     /* UART TX */
     if (RANGE_CHECK(addr, UART_BASE, UART_SIZE))
         return write_uart(bus->uart0, addr, size, value);
@@ -203,11 +304,22 @@ struct rv32_uart *uart_init()
     return uart;
 }
 
+struct rv32_clint *clint_init()
+{
+    struct rv32_clint *clint = malloc(sizeof(struct rv32_clint));
+    clint->mtimecmp = 0;
+    clint->mtime = 0;
+
+    return clint;
+}
+
 struct rv32_bus *bus_init()
 {
     struct rv32_bus *bus = malloc(sizeof(struct rv32_bus));
 
     bus->ram = malloc(sizeof(char) * RAM_SIZE);
+    bus->uart0 = uart_init();
+    bus->clint = clint_init();
 
     return bus;
 }
@@ -217,7 +329,6 @@ struct rv32_core *core_init()
     struct rv32_core *core = malloc(sizeof(struct rv32_core));
 
     core->bus = bus_init();
-    core->bus->uart0 = uart_init();
 
     /* Initialize the SP(x2) */
     core->xreg[2] = RAM_BASE + RAM_SIZE;
@@ -261,15 +372,23 @@ exception_t fetch(struct rv32_core *core)
     return OK;
 }
 
+u32 read_csr(struct rv32_core *core, u16 addr)
+{
+    return core->csr[addr];
+}
+
+void write_csr(struct rv32_core *core, u16 addr, u32 value)
+{
+    core->csr[addr] = value;
+}
+
 typedef enum {
     I_TYPE_LOAD = 0b00000011,
     I_TYPE_FENCE = 0b00001111,
     I_TYPE = 0b00010011,
     U_TYPE_AUIPC = 0b00010111,
     S_TYPE = 0b00100011,
-#if CONFIG_RV32A_EXTENSION
     A_TYPE = 0b00101111,
-#endif
     R_TYPE = 0b00110011,
     U_TYPE_LUI = 0b00110111,
     B_TYPE = 0b01100011,
@@ -528,9 +647,59 @@ exception_t execute(struct rv32_core *core)
         u16 addr = (instr & 0xfff00000) >> 20;
         switch (func3) {
         case 0x0:
-            if (rs2 == 0x0 && func7 == 0x0) {
+            if (rs2 == 0x0 && func7 == 0x0) { /* ecall */
+                // TODO
                 return 0;
+            } else if (rs2 == 0x1 && func7 == 0x0) { /* ebreak */
+                // TODO
+                return 0;
+            } else if (rs2 == 0x2 && func7 == 0x18) { /* mret */
+                core->pc = read_csr(core, MEPC);
+                write_csr(core, MSTATUS,
+                          ((read_csr(core, MSTATUS) >> 7) & 1)
+                              ? read_csr(core, MSTATUS) | (MSTATUS_MIE)
+                              : read_csr(core, MSTATUS) & ~(MSTATUS_MIE));
+                write_csr(core, MSTATUS,
+                          read_csr(core, MSTATUS) | (MSTATUS_MPIE));
             }
+            break;
+        case 0x1: { /* csrrw */
+            u32 tmp = read_csr(core, addr);
+            write_csr(core, addr, core->xreg[rs1]);
+            core->xreg[rd] = tmp;
+            break;
+        }
+        case 0x2: { /* csrrs */
+            u32 tmp = read_csr(core, addr);
+            write_csr(core, addr, tmp | core->xreg[rs1]);
+            core->xreg[rd] = tmp;
+            break;
+        }
+        case 0x3: { /* csrrc */
+            u32 tmp = read_csr(core, addr);
+            write_csr(core, addr, tmp & ~core->xreg[rs1]);
+            core->xreg[rd] = tmp;
+            break;
+        }
+        case 0x5: { /* csrrwi */
+            core->xreg[rd] = read_csr(core, addr);
+            write_csr(core, addr, rs1);
+            break;
+        }
+        case 0x6: { /* csrrsi */
+            u32 tmp = read_csr(core, addr);
+            write_csr(core, addr, tmp | rs1);
+            core->xreg[rd] = tmp;
+            break;
+        }
+        case 0x7: { /* csrrci */
+            u32 tmp = read_csr(core, addr);
+            write_csr(core, addr, tmp | ~rs1);
+            core->xreg[rd] = tmp;
+            break;
+        }
+        default:
+            return ILLEGAL_INSTRUCTION;
         }
         break;
     }
@@ -541,22 +710,87 @@ exception_t execute(struct rv32_core *core)
     return OK;
 }
 
+void trap_handler(struct rv32_core *core, exception_t e, interrupt_t intr)
+{
+    u32 exception_pc = core->pc - 4;
+    bool is_interrupt = (intr != NONE);
+    u32 cause = e;
+
+    if (is_interrupt) {
+        cause = (0x80000000 | intr);
+        /* Set PC to interrupt handler address */
+        core->pc = read_csr(core, MTVEC);
+
+        /* Store the PC which got the exception to MEPC */
+        write_csr(core, MEPC, exception_pc & ~1);
+
+        /* Set the trap reason to MCAUSE */
+        write_csr(core, MCAUSE, cause);
+
+        /* Set MTVAL to 0 because this is an interrupt
+         * (access illegal and illegal Instruction need to update MTVAL)
+         */
+        write_csr(core, MTVAL, 0);
+
+        write_csr(core, MSTATUS,
+                  ((read_csr(core, MSTATUS) >> 3) & 1)
+                      ? read_csr(core, MSTATUS) | (MSTATUS_MPIE)
+                      : read_csr(core, MSTATUS) & ~(MSTATUS_MPIE));
+        write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(MSTATUS_MIE));
+    }
+}
+
+interrupt_t check_pending_interrupt(struct rv32_core *core)
+{
+    u32 pending = read_csr(core, MIE) & read_csr(core, MIP);
+
+    /* Machine Timer Interrupt Pending */
+    if (pending & MIP_MTIP) {
+        /* Clear Timer Interrupt Pending flag */
+        write_csr(core, MIP, read_csr(core, MIP) & ~MIP_MTIP);
+        return MACHINE_TIMER_INTERRUPT;
+    }
+
+    return NONE;
+}
+
+void tick(struct rv32_core *core)
+{
+    struct rv32_clint *clint = core->bus->clint;
+
+    clint->mtime++;
+
+    if ((clint->mtimecmp > 0) & (clint->mtime >= clint->mtimecmp)) {
+        write_csr(core, MIP, MIP_MTIP);
+        /* TODO: This is a workaround */
+        clint->mtimecmp *= 2;
+    }
+}
+
+
 int emu(int argc, char **argv)
 {
     struct rv32_core *core;
     exception_t e;
+    interrupt_t intr;
 
     core = core_init();
     core->pc = load_elf(core->bus, argv[1]);
 
     while (1) {
+        tick(core);
+        if ((intr = check_pending_interrupt(core)) != NONE)
+            trap_handler(core, OK, intr);
+
         if ((e = fetch(core)) != OK) {
+            printf("Fetch PC : 0x%x\n", core->pc);
             break;
         }
 
         core->pc += 4;
 
         if ((e = execute(core)) != OK) {
+            printf("Execute PC : 0x%x\n", core->pc - 4);
             break;
         }
     }
