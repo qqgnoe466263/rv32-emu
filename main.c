@@ -1,3 +1,4 @@
+#include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -699,17 +700,42 @@ void bus_disk_access(struct rv32_bus *bus)
         pr_err("write to RAM");
 }
 
+bool uart_is_interrupting(struct rv32_uart *uart)
+{
+    pthread_mutex_lock(&uart->lock);
+    bool interrupting = uart->interrupting;
+    uart->interrupting = false;
+    pthread_mutex_unlock(&uart->lock);
+
+    return interrupting;
+}
+
 void *uart_thread_func(void *priv)
 {
     struct rv32_uart *uart = (struct rv32_uart *) priv;
 
-    /* TODO: UART RX */
     while (1) {
-        pthread_mutex_lock(&uart->lock);
+        struct pollfd pfd = {0, POLLIN, 0};
+        poll(&pfd, 1, 0);
+        if (!(pfd.revents & POLLIN))
+            continue;
 
+        char c;
+        /* An error or EOF */
+        if (read(STDIN_FILENO, &c, 1) <= 0)
+            continue;
+
+        pthread_mutex_lock(&uart->lock);
+        while ((uart->data[UART_LSR - UART_BASE] & UART_LSR_RX_EMPTY) == 1)
+            pthread_cond_wait(&uart->cond, &uart->lock);
+
+        uart->data[0] = c;
+        uart->interrupting = true;
+        uart->data[UART_LSR - UART_BASE] |= UART_LSR_RX_EMPTY;
         pthread_mutex_unlock(&uart->lock);
     }
 
+    /* Should not reach here */
     return NULL;
 }
 
@@ -1242,7 +1268,7 @@ void trap_handler(struct rv32_core *core,
                   const exception_t e,
                   const interrupt_t intr)
 {
-    u32 exception_pc = core->pc - 4;  // TODO: position of call trap_handler
+    u32 exception_pc = core->pc - 4;
     core_mode_t prev_mode = core->mode;
     bool is_interrupt = (intr != NONE);
     u32 cause = e;
@@ -1320,7 +1346,9 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
 
     do {
         u32 irq;
-        if (virtio_is_interrupting(core->bus->virtio)) {
+        if (uart_is_interrupting(core->bus->uart0)) {
+            irq = UART_IRQ;
+        } else if (virtio_is_interrupting(core->bus->virtio)) {
             bus_disk_access(core->bus);
             irq = VIRTIO_IRQ;
         } else
