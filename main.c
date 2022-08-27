@@ -204,6 +204,7 @@ struct rv32_bus {
 
 struct rv32_ctx {
     u32 instr;
+    u8 encode;  // 0: 32bits, 1: 16bits
 };
 
 struct rv32_core {
@@ -521,6 +522,8 @@ exception_t write_ram(u8 *ram, u32 addr, u32 size, u32 value)
 
 exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
 {
+    if (RAM_BASE <= addr)
+        return read_ram(bus->ram, addr, size, result);
     if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
         return read_clint(bus->clint, addr, size, result);
     if (RANGE_CHECK(addr, PLIC_BASE, PLIC_SIZE))
@@ -530,14 +533,14 @@ exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
         return read_uart(bus->uart0, addr, size, result);
     if (RANGE_CHECK(addr, VIRTIO_BASE, VIRTIO_SIZE))
         return read_virtio(bus->virtio, addr, size, result);
-    if (RAM_BASE <= addr)
-        return read_ram(bus->ram, addr, size, result);
 
     return LOAD_ACCESS_FAULT;
 }
 
 exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
 {
+    if (RAM_BASE <= addr)
+        return write_ram(bus->ram, addr, size, value);
     if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
         return write_clint(bus->clint, addr, size, value);
     if (RANGE_CHECK(addr, PLIC_BASE, PLIC_SIZE))
@@ -547,8 +550,6 @@ exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
         return write_uart(bus->uart0, addr, size, value);
     if (RANGE_CHECK(addr, VIRTIO_BASE, VIRTIO_SIZE))
         return write_virtio(bus->virtio, addr, size, value);
-    if (RAM_BASE <= addr)
-        return write_ram(bus->ram, addr, size, value);
 
     return STORE_AMO_ACCESS_FAULT;
 }
@@ -854,14 +855,26 @@ struct rv32_core *core_init(int argc, char **argv)
 exception_t fetch(struct rv32_core *core)
 {
     u32 ppc;
+    u32 encode;
+
     exception_t e = mmu_translate(core, core->pc, INSTRUCTION_PAGE_FAULT, &ppc);
     if (e != OK)
         return e;
 
     core->xreg[0] = 0;
 
-    if (read_bus(core->bus, ppc, 32, &core->ctx.instr) != OK)
+    if (read_bus(core->bus, ppc, 8, &encode) != OK)
         return INSTRUCTION_ACCESS_FAULT;
+
+    if ((encode & 0x3) == 0x3) {
+        core->ctx.encode = 0;
+        if (read_bus(core->bus, ppc, 32, &core->ctx.instr) != OK)
+            return INSTRUCTION_ACCESS_FAULT;
+    } else {
+        core->ctx.encode = 1;
+        if (read_bus(core->bus, ppc, 16, &core->ctx.instr) != OK)
+            return INSTRUCTION_ACCESS_FAULT;
+    }
 
     return OK;
 }
@@ -913,7 +926,7 @@ typedef enum {
     I_TYPE_SYS = 0b01110011,
 } op_type;
 
-exception_t execute(struct rv32_core *core)
+exception_t execute_32(struct rv32_core *core)
 {
     u32 instr = core->ctx.instr;
     u32 opcode = instr & 0x7f;
@@ -966,6 +979,9 @@ exception_t execute(struct rv32_core *core)
     case I_TYPE_FENCE:
         switch (func3) {
         case 0x0: /* fence */
+            /* TODO */
+            break;
+        case 0x1: /* fence.i */
             /* TODO */
             break;
         default:
@@ -1263,6 +1279,215 @@ exception_t execute(struct rv32_core *core)
 
     return OK;
 }
+exception_t execute_16(struct rv32_core *core)
+{
+    u16 instr = (u16) core->ctx.instr;
+    u8 opcode = instr & 0x3;
+    u8 func3 = (instr >> 13) & 0x7;
+    u8 func4 = (instr >> 12) & 0xf;
+    u8 func6 = (instr >> 10) & 0x3f;
+    u8 func8 = (func6 << 2) | ((instr >> 5) & 0x3);
+
+    exception_t e;
+
+    switch (opcode) {
+    case 0x0: {
+        u32 result = 0;
+        u32 addr = 0;
+        u8 offset = 0;
+        u8 rd_ = ((instr >> 2) & 0x7) + 8;   // dest
+        u8 rs2_ = ((instr >> 2) & 0x7) + 8;  // src
+        u8 rs1_ = ((instr >> 7) & 0x7) + 8;  // base
+
+        switch (func3) {
+        case 0x0: { /* c.addi4spn */
+            u32 imm = ((instr >> 5) & 0x1) << 3 | ((instr >> 6) & 0x1) << 2 |
+                      ((instr >> 7) & 0xf) << 6 | ((instr >> 11) & 0x3) << 4;
+            if (imm != 0)
+                core->xreg[rd_] = core->xreg[2] + imm;
+        } break;
+        case 0x2: /* c.lw */
+            offset = ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 2 |
+                     ((instr >> 10) & 0x7) << 3;
+            addr = core->xreg[rs1_] + offset;
+
+            if ((e = core_read_bus(core, addr, 32, &result)) != OK)
+                return e;
+            core->xreg[rd_] = (s32) result;
+            break;
+        case 0x6: /* c.sw */
+            offset = ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 2 |
+                     ((instr >> 10) & 0x7) << 3;
+            addr = core->xreg[rs1_] + offset;
+
+            if ((e = core_write_bus(core, addr, 32, core->xreg[rs2_])) != OK)
+                return e;
+
+            break;
+        default:
+            return ILLEGAL_INSTRUCTION;
+        }
+    } break;
+    case 0x1: {
+        u8 rs2_ = ((instr >> 2) & 0x7) + 8;  // src
+        u8 rs1_ = ((instr >> 7) & 0x7) + 8;  // dest
+        u8 rd_ = ((instr >> 7) & 0x7) + 8;   // dest
+        u8 rd = ((instr >> 7) & 0x1f);       // dest
+        u8 func2 = (instr >> 10) & 0x3;
+        u32 shamt = ((instr >> 12) & 0x1) << 5 | ((instr >> 2) & 0x1f);
+
+        if (func3 == 0x4 && func2 == 0x0) { /* c.srli */
+            core->xreg[rd_] >>= shamt;
+        } else if (func3 == 0x4 && func2 == 0x1) { /* c.srai */
+            core->xreg[rd_] = (s32) core->xreg[rd_] >> shamt;
+        } else if (func3 == 0x0 && rd != 0) { /* c.addi */
+            s32 imm = ((instr >> 12) & 0x1) << 5 | ((instr >> 2) & 0x1f);
+            // sign-extended 6-bit immediate
+            imm |= (imm & 0x20) ? 0xffffffc0 : 0;
+            if (imm != 0)
+                core->xreg[rd] = (u32)((s32) core->xreg[rd] + imm);
+        } else if (func3 == 0x4 && func2 == 0x2) { /* c.andi */
+            s32 imm = ((instr >> 12) & 0x1) << 5 | ((instr >> 2) & 0x1f);
+            // sign-extended 6-bit immediate
+            imm |= (imm & 0x20) ? 0xffffffc0 : 0;
+            core->xreg[rd_] = (s32) core->xreg[rd_] & imm;
+        } else if (func3 == 0x3) {
+            if (rd != 0 && rd != 2) { /* c.lui */
+                s32 imm = ((instr >> 2) & 0x1f) << 12 | ((instr >> 12) & 0x1)
+                                                            << 17;
+                imm |= (imm & 0x20000) ? 0xffffc0000 : 0;
+                core->xreg[rd] = imm;
+            } else if (rd == 2) { /* c.addi16sp */
+                s32 imm = ((instr >> 12) & 0x1) << 9 |
+                          ((instr >> 2) & 0x1) << 5 |
+                          ((instr >> 3) & 0x3) << 7 |
+                          ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 4;
+                imm |= (imm & 0x200) ? 0xffffffc00 : 0;
+                if (imm != 0)
+                    core->xreg[2] = (u32)((s32) core->xreg[2] + imm);
+            }
+        } else if (func3 == 0x5) { /* c.j */
+            u32 offset =
+                ((instr >> 2) & 0x1) << 5 | ((instr >> 3) & 0x7) << 1 |
+                ((instr >> 6) & 0x1) << 7 | ((instr >> 7) & 0x1) << 6 |
+                ((instr >> 8) & 0x1) << 10 | ((instr >> 9) & 0x3) << 8 |
+                ((instr >> 11) & 0x1) << 4 | ((instr >> 12) & 0x1) << 11;
+            offset |= (offset & 0x800) ? 0xfffff000 : 0;
+            core->pc += (offset - 2);
+        } else if (func3 == 0x1) { /* c.jal */
+            u32 offset =
+                ((instr >> 2) & 0x1) << 5 | ((instr >> 3) & 0x7) << 1 |
+                ((instr >> 6) & 0x1) << 7 | ((instr >> 7) & 0x1) << 6 |
+                ((instr >> 8) & 0x1) << 10 | ((instr >> 9) & 0x3) << 8 |
+                ((instr >> 11) & 0x1) << 4 | ((instr >> 12) & 0x1) << 11;
+            offset |= (offset & 0x800) ? 0xfffff000 : 0;
+            core->xreg[1] = core->pc;
+            core->pc += (offset - 2);
+        } else if (func3 == 0x6) { /* c.beqz */
+            u32 offset = ((instr >> 2) & 0x1) << 5 | ((instr >> 3) & 0x3) << 1 |
+                         ((instr >> 5) & 0x3) << 6 |
+                         ((instr >> 10) & 0x3) << 3 |
+                         ((instr >> 12) & 0x1) << 8;
+            offset |= (offset & 0x100) ? 0xfffffE00 : 0;
+            if (core->xreg[rs1_] == 0)
+                core->pc += (offset - 2);
+        } else if (func3 == 0x7) { /* c.bnqz */
+            u32 offset = ((instr >> 2) & 0x1) << 5 | ((instr >> 3) & 0x3) << 1 |
+                         ((instr >> 5) & 0x3) << 6 |
+                         ((instr >> 10) & 0x3) << 3 |
+                         ((instr >> 12) & 0x1) << 8;
+            offset |= (offset & 0x100) ? 0xfffffE00 : 0;
+            if (core->xreg[rs1_] != 0)
+                core->pc += (offset - 2);
+        } else if (func3 == 0x2) { /* c.li */
+            s32 imm = ((instr >> 12) & 0x1) << 5 | ((instr >> 2) & 0x1f);
+            imm |= (imm & 0x20) ? 0xffffffc0 : 0;
+            core->xreg[rd] = imm;
+        } else if (func3 == 0x0) { /* c.nop */
+            return OK;
+        } else {
+            switch (func8) {
+            case 0x8f: /* c.and */
+                core->xreg[rd_] &= core->xreg[rs2_];
+                break;
+            case 0x8e: /* c.or */
+                core->xreg[rd_] |= core->xreg[rs2_];
+                break;
+            case 0x8d: /* c.xor */
+                core->xreg[rd_] ^= core->xreg[rs2_];
+                break;
+            case 0x8c: /* c.sub */
+                core->xreg[rd_] -= core->xreg[rs2_];
+                break;
+
+            default:
+                return ILLEGAL_INSTRUCTION;
+            }
+        }
+
+    } break;
+    case 0x2: {
+        u32 rs2 = ((instr >> 2) & 0x1f);
+        u32 rs1 = ((instr >> 7) & 0x1f);
+        u32 rd = ((instr >> 7) & 0x1f);
+        u32 offset = 0;
+        u32 addr = 0;
+        u32 shamt = ((instr >> 12) & 0x1) << 5 | ((instr >> 2) & 0x1f);
+
+        if ((func3 == 0x4 && func4 == 0x9) && rs2 != 0) { /* c.add */
+            core->xreg[rd] =
+                (s32)((u32) core->xreg[rd] + (u32) core->xreg[rs2]);
+        } else if (func4 == 0x9 && rs2 == 0) {
+            if (rs1 == 0) { /* c.ebreak */
+                core->pc += 2;
+                return BREAKPOINT;
+            } else { /* c.jalr */
+                u32 prev_pc = core->pc;
+                core->pc = core->xreg[rs1];
+                core->xreg[1] = prev_pc;
+            }
+        } else if (func4 == 0x8 && rs1 != 0 && rs2 == 0) { /* c.jr */
+            core->pc = core->xreg[rs1];
+        } else if ((func3 == 0x4 && func4 == 0x8) && rs2 != 0) { /* c.mv */
+            core->xreg[rd] = core->xreg[rs2];
+        } else if (func3 == 0x0) { /* c.slli */
+            core->xreg[rd] = core->xreg[rs1] << shamt;
+        } else if (func3 == 0x2) { /* c. lwsp */
+            offset = ((instr >> 2) & 0x3) << 6 | ((instr >> 4) & 0x7) << 2 |
+                     ((instr >> 12) & 0x1) << 5;
+            addr = core->xreg[2] + offset;  // sp
+            if ((e = core_read_bus(core, addr, 32, &core->xreg[rd])) != OK)
+                return e;
+        } else if (func3 == 0x6) { /* c.swsp */
+            offset = ((instr >> 7) & 0x3) << 6 | ((instr >> 9) & 0xf) << 2;
+            addr = core->xreg[2] + offset;  // sp
+            if ((e = core_write_bus(core, addr, 32, core->xreg[rs2])) != OK)
+                return e;
+        } else {
+            return ILLEGAL_INSTRUCTION;
+        }
+    } break;
+    default:
+        return ILLEGAL_INSTRUCTION;
+    };
+
+    return OK;
+}
+
+exception_t execute(struct rv32_core *core)
+{
+    if (!core->ctx.encode) {
+        core->pc += 4;
+        return execute_32(core);
+    } else {
+        core->pc += 2;
+        return execute_16(core);
+    }
+
+    /* never be here */
+    return OK;
+}
+
 
 void trap_handler(struct rv32_core *core,
                   const exception_t e,
@@ -1305,12 +1530,9 @@ void trap_handler(struct rv32_core *core,
         /* Set PC to handler routine address */
         if (is_interrupt) {
             u32 vec = (read_csr(core, MTVEC) & 1) ? 4 * cause : 0;
-            core->pc = read_csr(core, MTVEC) + vec;
+            core->pc = (read_csr(core, MTVEC) & ~1) + vec;
         } else
-            core->pc = read_csr(core, MTVEC);
-
-        /* Set PC to interrupt handler address */
-        core->pc = read_csr(core, MTVEC);
+            core->pc = read_csr(core, MTVEC) & ~1;
 
         /* Store the PC which got the exception to MEPC */
         write_csr(core, MEPC, exception_pc & ~1);
@@ -1416,13 +1638,11 @@ int emu(int argc, char **argv)
     core = core_init(argc, argv);
 
     while (1) {
-        tick(core);
+        // tick(core);
 
         if ((e = fetch(core)) != OK) {
             break;
         }
-
-        core->pc += 4;
 
         if ((e = execute(core)) != OK) {
             trap_handler(core, e, NONE);

@@ -7,7 +7,7 @@
     * [sysprog21/semu](https://github.com/jserv/semu)
 * Support features
     * [DONE] RV32G
-    * [TODO] RV32C 
+    * [WIP ] RV32C
     * [DONE] Privilege levels
     * [DONE] CSR
     * [DONE] Sv32
@@ -35,9 +35,21 @@ $
 
 ## Compliance Test
 
+* Passed Tests
+    * `I` : Base Integer Instruction Set
+    * `M` : Standard Extension for Integer Multiplication and Division
+
+* Failed Tests
+    * `C` : Standard Extension for Compressed Instruction
+        * c.ebreak
+
 * Build and test:
 ```shell
-$ make CONFIG_ARCH_TEST=1 arch-test
+$ make clean
+
+$ make CONFIG_ARCH_TEST=1 arch-test RISCV_DEVICE=I
+$ make CONFIG_ARCH_TEST=1 arch-test RISCV_DEVICE=M
+$ make CONFIG_ARCH_TEST=1 arch-test RISCV_DEVICE=C
 ```
 
 

@@ -1,7 +1,7 @@
 #!Makefile
 
 CC = gcc
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -O2
 LDFLAGS = -lpthread
 BIN = rv_emu
 C_FILES = $(wildcard *.c)
