@@ -7,9 +7,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "boot.h"
 #include "elf.h"
 
-#define RAM_SIZE (1024 * 1024 * 128)
+#define RAM_SIZE (1024 * 1024 * 256)
 #define RAM_BASE (0x80000000)
 
 #define PAGE_SIZE (4096)
@@ -41,6 +42,12 @@ struct rv32_sig {
 #endif
 
 typedef enum {
+    ACCESS_INSTR,
+    ACCESS_LOAD,
+    ACCESS_STORE,
+} access_t;
+
+typedef enum {
     OK = -1,
     INSTRUCTION_ADDRESS_MISALIGNED = 0,
     INSTRUCTION_ACCESS_FAULT = 1,
@@ -50,9 +57,11 @@ typedef enum {
     LOAD_ACCESS_FAULT = 5,
     STORE_AMO_ADDRESS_MISALIGNED = 6,
     STORE_AMO_ACCESS_FAULT = 7,
+    ECALL_FROM_U_MODE = 8,
+    ECALL_FROM_S_MODE = 9,
     INSTRUCTION_PAGE_FAULT = 12,
     LOAD_PAGE_FAULT = 13,
-    STORE_AMO_PAGE_FAULT = 15,
+    STORE_PAGE_FAULT = 15,
 } exception_t;
 
 typedef enum {
@@ -61,7 +70,6 @@ typedef enum {
     MACHINE_SOFTWARE_INTERRUPT = 3,
     SUPERVISOR_TIMER_INTERRUPT = 5,
     MACHINE_TIMER_INTERRUPT = 7,
-    ECALL_FROM_U_MODE = 8,
     SUPERVISOR_EXTERNAL_INTERRUPT = 9,
     MACHINE_EXTERNAL_INTERRUPT = 11,
 } interrupt_t;
@@ -69,6 +77,7 @@ typedef enum {
 /* M mode CSRs */
 enum {
     MSTATUS = 0x300,
+    MISA = 0x301,
     MEDELEG = 0x302,
     MIDELEG,
     MIE,  // Machine Interrupt Enable
@@ -77,17 +86,35 @@ enum {
     MCAUSE,
     MTVAL,
     MIP,  // Machine Interrupt Pending
+    TIME = 0xc01,
 };
 
 /* MSTATUS */
 enum {
-    MSTATUS_MIE = (1 << 3),
-    MSTATUS_MPIE = (1 << 7),  // Save Previous MSTATUS_MIE value
+    MSTATUS_MIE = 0x8,
+    MSTATUS_MPIE = 0x80,  // Save Previous MSTATUS_MIE value
+    MSTATUS_MPP = 0x1800,
 };
+
+/* SSTATUS */
+enum {
+    SSTATUS_SIE = 0x2,
+    SSTATUS_SPIE = 0x20,
+    SSTATUS_SPP = 0x100,
+    SSTATUS_FS = 0x6000,
+    SSTATUS_XS = 0x18000,
+    SSTATUS_SUM = 0x40000,
+    SSTATUS_MXR = 0x80000,
+    SSTATUS_UXL = 0x300000000,
+};
+#define SSTATUS_VISIBLE                                                   \
+    (SSTATUS_SIE | SSTATUS_SPIE | SSTATUS_SPP | SSTATUS_FS | SSTATUS_XS | \
+     SSTATUS_SUM | SSTATUS_MXR | SSTATUS_UXL)
 
 /* S mode CSRs */
 enum {
     SSTATUS = 0x100,
+    SEDELEG = 0x102,
     SIE = 0x104,
     STVEC,
     SEPC = 0x141,
@@ -113,6 +140,22 @@ enum {
     MIP_MTIP = (1 << 7),
     MIP_MEIP = (1 << 11),
 };
+
+/* SIP */
+enum {
+    SIP_USIP = 0x1,
+    SIP_SSIP = 0x2,
+    SIP_UEIP = 0x100,
+};
+#define SIP_WRITABLE (SIP_SSIP | SIP_USIP | SIP_UEIP)
+
+#define MIDELEG_WRITABLE (MIP_SSIP | MIP_STIP | MIP_SEIP)
+
+#define set_csr_bits(core, csr, mask) \
+    write_csr(core, csr, read_csr(core, csr) | mask)
+
+#define clear_csr_bits(core, csr, mask) \
+    write_csr(core, csr, read_csr(core, csr) & ~mask)
 
 #define UART_BASE (0x10000000)
 #define UART_SIZE (0x100)
@@ -192,6 +235,7 @@ typedef enum {
 
 struct rv32_bus {
     u8 *ram;
+    struct rv32_boot *boot;
     struct rv32_uart *uart0;
     struct rv32_clint *clint;
     struct rv32_plic *plic;
@@ -204,6 +248,8 @@ struct rv32_bus {
 
 struct rv32_ctx {
     u32 instr;
+    u32 rsvd;
+    bool call;  // into ecall
     u8 encode;  // 0: 32bits, 1: 16bits
 };
 
@@ -483,6 +529,25 @@ bool virtio_is_interrupting(struct rv32_virtio *virtio)
     return false;
 }
 
+exception_t read_boot(u8 *ram, u32 addr, u32 size, u32 *result)
+{
+    u32 idx = (addr - BOOT_ROM_BASE), tmp = 0;
+
+    switch (size) {
+    case 32:
+        tmp |= (u32)(ram[idx + 3]) << 24;
+        tmp |= (u32)(ram[idx + 2]) << 16;
+    case 16:
+        tmp |= (u32)(ram[idx + 1]) << 8;
+    case 8:
+        tmp |= (u32)(ram[idx + 0]) << 0;
+        *result = tmp;
+        return OK;
+    default:
+        return LOAD_ACCESS_FAULT;
+    }
+}
+
 exception_t read_ram(u8 *ram, u32 addr, u32 size, u32 *result)
 {
     u32 idx = (addr - RAM_BASE), tmp = 0;
@@ -522,6 +587,8 @@ exception_t write_ram(u8 *ram, u32 addr, u32 size, u32 value)
 
 exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
 {
+    if (RANGE_CHECK(addr, BOOT_ROM_BASE, 0xf000))
+        return read_boot(bus->boot->mem, addr, size, result);
     if (RAM_BASE <= addr)
         return read_ram(bus->ram, addr, size, result);
     if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
@@ -554,12 +621,62 @@ exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
     return STORE_AMO_ACCESS_FAULT;
 }
 
+u32 read_csr(struct rv32_core *core, u16 addr)
+{
+    switch (addr) {
+    case SSTATUS:
+        return (core->csr[MSTATUS] & SSTATUS_VISIBLE);
+    case SIE:
+        return (core->csr[MIE] & core->csr[MIDELEG]);
+    case SIP:
+        return (core->csr[MIP] & core->csr[MIDELEG]);
+    default:
+        return core->csr[addr];
+    }
+}
+
+void write_csr(struct rv32_core *core, u16 addr, u32 value)
+{
+    switch (addr) {
+    case SSTATUS: {
+        u32 *mstatus = &core->csr[MSTATUS];
+        *mstatus = (*mstatus & ~SSTATUS_VISIBLE) | (value & SSTATUS_VISIBLE);
+        break;
+    }
+    case SIE: {
+        u32 *mie = &core->csr[MIE];
+        u32 mask = core->csr[MIDELEG];
+        *mie = (*mie & ~mask) | (value & mask);
+        break;
+    }
+    case SIP: {
+        u32 *mip = &core->csr[MIP];
+        u32 mask = core->csr[MIDELEG] & SIP_WRITABLE;
+        *mip = (*mip & ~mask) | (value & mask);
+        break;
+    }
+    case MIDELEG: {
+        u32 *mideleg = &core->csr[MIDELEG];
+        *mideleg = (*mideleg & ~MIDELEG_WRITABLE) | (value & MIDELEG_WRITABLE);
+        break;
+    }
+    default:
+        core->csr[addr] = value;
+    }
+}
+
 exception_t mmu_translate(struct rv32_core *core,
                           u32 addr,
                           exception_t e,
-                          u32 *result)
+                          u32 *result,
+                          access_t access)
 {
     if (!core->enable_paging) {
+        *result = addr;
+        return OK;
+    }
+
+    if (core->ctx.call) {
         *result = addr;
         return OK;
     }
@@ -574,18 +691,21 @@ exception_t mmu_translate(struct rv32_core *core,
 
 #define PTE_SIZE 4
 
+    bool v, r, w, x;
     while (1) {
         exception_t except =
             read_bus(core->bus, pt + vpn[level] * PTE_SIZE, 32, &pte);
+
         if (except != OK)
             return except;
-        bool v = pte & 1;
-        bool r = (pte >> 1) & 0x1;
-        bool w = (pte >> 2) & 0x1;
-        bool x = (pte >> 3) & 0x1;
+
+        v = pte & 1;
+        r = (pte >> 1) & 0x1;
+        w = (pte >> 2) & 0x1;
+        x = (pte >> 3) & 0x1;
 
         if (!v || (!r && w))
-            return e;
+            goto fail;
 
         if (r || x)
             break;
@@ -593,25 +713,50 @@ exception_t mmu_translate(struct rv32_core *core,
         /* 10bits of flags */
         pt = ((pte >> 10) & 0x0fffffff) * PAGE_SIZE;
         if (--level < 0)
-            return e;
+            goto fail;
+    }
+
+    switch (access) {
+    case ACCESS_INSTR:
+        if (x == 0)
+            goto fail;
+        break;
+    case ACCESS_LOAD:
+        if (r == 0)
+            goto fail;
+        break;
+    case ACCESS_STORE:
+        if (w == 0)
+            goto fail;
+        break;
     }
 
     u32 ppn[] = {
-        (pte >> 10) & 0xfff,
-        (pte >> 20) & 0xfff,
+        (pte >> 10) & 0xfff,  // 12bits
+        (pte >> 20) & 0xfff,  // 12bits
     };
 
-    u32 offset = addr & 0xfff;
     switch (level) {
     case 0:
-        *result = (((pte >> 10) & 0x0fffffff) << 12) | offset;
+        *result = (ppn[1] << 22) | (ppn[0] << 12) | (addr & 0xfff);
         return OK;
     case 1:
-        *result = (ppn[1] << 22) | (ppn[0] << 12) | offset;
+        *result = (ppn[1] << 22) | (addr & 0x3fffff);
         return OK;
-    default:
-        return e;
     }
+
+fail:
+    switch (access) {
+    case ACCESS_INSTR:
+        return INSTRUCTION_PAGE_FAULT;
+    case ACCESS_LOAD:
+        return LOAD_PAGE_FAULT;
+    case ACCESS_STORE:
+        return STORE_PAGE_FAULT;
+    }
+
+    /* Never come to here */
+    return OK;
 }
 
 exception_t core_read_bus(struct rv32_core *core,
@@ -620,7 +765,8 @@ exception_t core_read_bus(struct rv32_core *core,
                           u32 *result)
 {
     u32 pa;
-    exception_t e = mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa);
+    exception_t e =
+        mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa, ACCESS_LOAD);
     if (e != OK)
         return e;
 
@@ -633,7 +779,8 @@ exception_t core_write_bus(struct rv32_core *core,
                            u32 value)
 {
     u32 pa;
-    exception_t e = mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa);
+    exception_t e =
+        mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa, ACCESS_STORE);
     if (e != OK)
         return e;
 
@@ -781,12 +928,36 @@ struct rv32_bus *bus_init()
     struct rv32_bus *bus = malloc(sizeof(struct rv32_bus));
 
     bus->ram = malloc(sizeof(char) * RAM_SIZE);
+    bus->boot = malloc(sizeof(struct rv32_boot));
     bus->uart0 = uart_init();
     bus->clint = clint_init();
     bus->plic = plic_init();
     bus->virtio = virtio_init(NULL);
 
     return bus;
+}
+
+void load_binary(struct rv32_bus *bus, char *filename, u32 offset)
+{
+    FILE *f = fopen(filename, "rb");
+    if (!f) {
+        printf("Open %s Failed!\n", filename);
+        goto out;
+    }
+
+    fseek(f, 0, SEEK_END);
+    size_t fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fread(bus->ram + offset, fsize, 1, f) != 1) {
+        printf("Read %s Failed!\n", filename);
+        goto out;
+    }
+
+    fclose(f);
+    return;
+out:
+    exit(0);
 }
 
 u32 load_elf(struct rv32_bus *bus, char *filename)
@@ -833,6 +1004,31 @@ u8 *load_disk(char *filename)
     return disk;
 }
 
+void csr_init(struct rv32_core *core)
+{
+    memset(&core->csr, '\x00', sizeof(u32) * 4096);
+
+    u32 misa = (1 << 30) |  // RV32
+               (1 << 0) |   // ATOMIC extension
+               (1 << 2) |   // Compressed extension
+               (1 << 8) |   // RV32I/64I/128I base ISA
+               (1 << 12) |  // Integer Multiply/Divide extension
+               (1 << 18) |  // Supervisor mode implemented
+               (1 << 20);   // User mode implemented
+
+    write_csr(core, MISA, misa);
+}
+
+int parse_arg(char *arg, int argc, char **argv)
+{
+    for (int i = 0; i < argc; i++) {
+        if (!strncmp(arg, argv[i], strlen(arg)))
+            return i + 1;
+    }
+
+    return -1;
+}
+
 struct rv32_core *core_init(int argc, char **argv)
 {
     struct rv32_core *core = malloc(sizeof(struct rv32_core));
@@ -840,14 +1036,63 @@ struct rv32_core *core_init(int argc, char **argv)
     core->bus = bus_init();
     core->mode = MACHINE;
 
-    core->pc = load_elf(core->bus, argv[1]);
+#ifdef CONFIG_ARCH_TEST
+    load_elf(core->bus, argv[1]);
+    core->pc = RAM_BASE;
+#else
+    int opt_idx = 0;
+    char *bios_f = NULL;
+    char *kernel_f = NULL;
+    char *elf_f = NULL;
+    char *rootfs_f = NULL;
+    char *dtb = NULL;
 
-#ifndef CONFIG_ARCH_TEST
-    core->bus->virtio = virtio_init(load_disk(argv[2]));
+    opt_idx = parse_arg("--bios", argc, argv);
+    if (opt_idx != -1)
+        bios_f = argv[opt_idx];
+
+    opt_idx = parse_arg("--kernel", argc, argv);
+    if (opt_idx != -1)
+        kernel_f = argv[opt_idx];
+
+    opt_idx = parse_arg("--elf", argc, argv);
+    if (opt_idx != -1)
+        elf_f = argv[opt_idx];
+
+    opt_idx = parse_arg("--rootfs", argc, argv);
+    if (opt_idx != -1)
+        rootfs_f = argv[opt_idx];
+
+    opt_idx = parse_arg("--dtb", argc, argv);
+    if (opt_idx != -1)
+        dtb = argv[opt_idx];
+
+    if (bios_f) {
+        load_binary(core->bus, bios_f, 0x0);
+        core->pc = BOOT_ROM_BASE;
+    }
+
+    if (kernel_f) {
+        // load_binary(core->bus, kernel_f, 0x04000000);
+        load_binary(core->bus, kernel_f, 0x00400000);
+    }
+
+    if (elf_f) {
+        load_elf(core->bus, elf_f);
+        core->pc = RAM_BASE;
+    }
+
+    if (rootfs_f) {
+        core->bus->virtio = virtio_init(load_disk(rootfs_f));
+    }
+
+    if (!boot_init(core->bus->boot, RAM_BASE, dtb))
+        exit(0);
 #endif
 
     /* Initialize the SP(x2) */
     core->xreg[2] = RAM_BASE + RAM_SIZE;
+    csr_init(core);
 
     return core;
 }
@@ -857,7 +1102,9 @@ exception_t fetch(struct rv32_core *core)
     u32 ppc;
     u32 encode;
 
-    exception_t e = mmu_translate(core, core->pc, INSTRUCTION_PAGE_FAULT, &ppc);
+    exception_t e = mmu_translate(core, core->pc, INSTRUCTION_PAGE_FAULT, &ppc,
+                                  ACCESS_INSTR);
+
     if (e != OK)
         return e;
 
@@ -879,14 +1126,7 @@ exception_t fetch(struct rv32_core *core)
     return OK;
 }
 
-u32 read_csr(struct rv32_core *core, u16 addr)
-{
-    if (addr == SIE)
-        return core->csr[MIE] & core->csr[MIDELEG];
-
-    return core->csr[addr];
-}
-
+bool trans = false;
 #define SATP_SV32 (1 << 31)
 void core_update_paging(struct rv32_core *core, u16 csr_addr)
 {
@@ -899,16 +1139,6 @@ void core_update_paging(struct rv32_core *core, u16 csr_addr)
     core->pagetable =
         (read_csr(core, SATP) & (((u32) 1 << 22) - 1)) * PAGE_SIZE;
     core->enable_paging = (1 == (read_csr(core, SATP) >> 31));
-}
-
-void write_csr(struct rv32_core *core, u16 addr, u32 value)
-{
-    if (addr == SIE) {
-        core->csr[MIE] = (core->csr[MIE] & ~core->csr[MIDELEG]) |
-                         (value & core->csr[MIDELEG]);
-        return;
-    }
-    core->csr[addr] = value;
 }
 
 typedef enum {
@@ -1074,6 +1304,41 @@ exception_t execute_32(struct rv32_core *core)
                                     core->xreg[rs2])) != OK)
                 return e;
             core->xreg[rd] = (int) tmp;
+        } else if (func3 == 0x2 && func5 == 0x2) { /* lr.w */
+            u32 addr = core->xreg[rs1];
+            u32 tmp = 0;
+            if ((e = core_read_bus(core, addr, 32, &tmp) != OK))
+                return e;
+            core->xreg[rd] = (s32)(tmp & 0xffffffff);
+            core->ctx.rsvd = addr;
+        } else if (func3 == 0x2 && func5 == 0x3) { /* sc.w */
+            u32 addr = core->xreg[rs1];
+            if (core->ctx.rsvd == addr) {
+                if ((e = core_write_bus(core, addr, 32, core->xreg[rs2])) != OK)
+                    return e;
+                core->xreg[rd] = 0;
+            } else {
+                core->xreg[rd] = 1;
+            }
+            core->ctx.rsvd = (u32) -1;
+        } else if (func3 == 0x2 && func5 == 0xC) { /* amoand.w */
+            u32 addr = core->xreg[rs1];
+            u32 tmp = 0;
+            if ((e = core_read_bus(core, addr, 32, &tmp)) != OK)
+                return e;
+            u32 value = (int) ((tmp & core->xreg[rs2]) & 0xffffffff);
+            if ((e = core_write_bus(core, addr, 32, value)) != OK)
+                return e;
+            core->xreg[rd] = (int) (tmp & 0xffffffff);
+        } else if (func3 == 0x2 && func5 == 0x8) { /* amoor.w */
+            u32 addr = core->xreg[rs1];
+            u32 tmp = 0;
+            if ((e = core_read_bus(core, addr, 32, &tmp)) != OK)
+                return e;
+            u32 value = (int) ((tmp | core->xreg[rs2]) & 0xffffffff);
+            if ((e = core_write_bus(core, addr, 32, value)) != OK)
+                return e;
+            core->xreg[rd] = (int) (tmp & 0xffffffff);
         } else {
             return ILLEGAL_INSTRUCTION;
         }
@@ -1195,6 +1460,9 @@ exception_t execute_32(struct rv32_core *core)
         switch (func3) {
         case 0x0:
             if (rs2 == 0x0 && func7 == 0x0) { /* ecall */
+                if (core->mode != USER)
+                    core->ctx.call = true;
+
                 switch (core->mode) {
                 case USER:
                 case SUPERVISOR:
@@ -1214,10 +1482,9 @@ exception_t execute_32(struct rv32_core *core)
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) | (1 << 5));
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 8));
             } else if (rs2 == 0x2 && func7 == 0x18) { /* mret */
+                core->ctx.call = false;
                 core->pc = read_csr(core, MEPC);
-                u32 mpp = (read_csr(core, MSTATUS) >> 11) & 3;
-                core->mode =
-                    ((mpp == 2) ? MACHINE : (mpp == 1 ? SUPERVISOR : USER));
+                core->mode = (read_csr(core, MSTATUS) >> 11) & 3;
                 write_csr(core, MSTATUS,
                           ((read_csr(core, MSTATUS) >> 7) & 1)
                               ? read_csr(core, MSTATUS) | (MSTATUS_MIE)
@@ -1263,7 +1530,7 @@ exception_t execute_32(struct rv32_core *core)
         }
         case 0x7: { /* csrrci */
             u32 tmp = read_csr(core, addr);
-            write_csr(core, addr, tmp | ~rs1);
+            write_csr(core, addr, tmp & ~rs1);
             core->xreg[rd] = tmp;
             core_update_paging(core, addr);
             break;
@@ -1493,46 +1760,57 @@ void trap_handler(struct rv32_core *core,
                   const exception_t e,
                   const interrupt_t intr)
 {
-    u32 exception_pc = core->pc - 4;
     core_mode_t prev_mode = core->mode;
+    u32 exception_pc;
     bool is_interrupt = (intr != NONE);
-    u32 cause = e;
+    u32 cause = is_interrupt ? intr : e;
+
+    switch (e) {
+    case BREAKPOINT:
+    case ECALL_FROM_S_MODE:
+    case ECALL_FROM_U_MODE:
+        exception_pc = core->pc - 4;
+        break;
+    default:
+        exception_pc = core->pc;
+    }
+
+    // Delegate to lower privilege mode if needed
+    if (((read_csr(core, MEDELEG) >> cause) & 1) == 0)
+        core->mode = MACHINE;
+    else {
+        if (((read_csr(core, SEDELEG) >> cause) & 1) == 0)
+            core->mode = SUPERVISOR;
+    }
 
     if (is_interrupt)
         cause = (0x80000000 | intr);
 
-    if (prev_mode <= SUPERVISOR &&
-        (((read_csr(core, MEDELEG) >> (u32) cause) & 1) != 0)) {
-        core->mode = SUPERVISOR;
+    if (core->mode == SUPERVISOR) {
         /* Set PC to handler routine address */
         if (is_interrupt) {
             u32 vec = (read_csr(core, STVEC) & 1) ? 4 * cause : 0;
             core->pc = (read_csr(core, STVEC) & ~1) + vec;
         } else
-            core->pc = read_csr(core, STVEC);
+            core->pc = read_csr(core, STVEC) & ~0x3;
+
         write_csr(core, SEPC, exception_pc & ~1);
         write_csr(core, SCAUSE, cause);
         write_csr(core, STVAL, 0);
 
+        u32 sstatus = read_csr(core, SSTATUS);
         write_csr(core, SSTATUS,
-                  ((read_csr(core, SSTATUS) >> 1) & 1)
-                      ? read_csr(core, SSTATUS) | (1 << 5)
-                      : read_csr(core, SSTATUS) & ~(1 << 5));
-        write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 1));
-
-        if (prev_mode == USER)
-            write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 8));
-        else
-            write_csr(core, SSTATUS, read_csr(core, SSTATUS) | (1 << 8));
-    } else {
-        core->mode = MACHINE;
-
+                  (sstatus & ~SSTATUS_SPIE) | ((sstatus & SSTATUS_SIE) << 4));
+        clear_csr_bits(core, SSTATUS, SSTATUS_SIE);
+        sstatus = read_csr(core, SSTATUS);
+        write_csr(core, SSTATUS, (sstatus & ~SSTATUS_SPP) | prev_mode << 8);
+    } else if (core->mode == MACHINE) {
         /* Set PC to handler routine address */
         if (is_interrupt) {
             u32 vec = (read_csr(core, MTVEC) & 1) ? 4 * cause : 0;
             core->pc = (read_csr(core, MTVEC) & ~1) + vec;
         } else
-            core->pc = read_csr(core, MTVEC) & ~1;
+            core->pc = read_csr(core, MTVEC) & ~0x3;
 
         /* Store the PC which got the exception to MEPC */
         write_csr(core, MEPC, exception_pc & ~1);
@@ -1545,12 +1823,13 @@ void trap_handler(struct rv32_core *core,
          */
         write_csr(core, MTVAL, 0);
 
+        u32 mstatus = read_csr(core, MSTATUS);
         write_csr(core, MSTATUS,
-                  ((read_csr(core, MSTATUS) >> 3) & 1)
-                      ? read_csr(core, MSTATUS) | (MSTATUS_MPIE)
-                      : read_csr(core, MSTATUS) & ~(MSTATUS_MPIE));
-        write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(MSTATUS_MIE));
-        write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(3 << 11));
+                  (mstatus & ~MSTATUS_MPIE) | ((mstatus & MSTATUS_MIE) << 4));
+
+        clear_csr_bits(core, MSTATUS, MSTATUS_MIE);
+        mstatus = read_csr(core, MSTATUS);
+        write_csr(core, MSTATUS, (mstatus & ~MSTATUS_MPP) | prev_mode << 11);
     }
 }
 
@@ -1621,7 +1900,8 @@ void tick(struct rv32_core *core)
 {
     struct rv32_clint *clint = core->bus->clint;
 
-    // clint->mtime++;
+    clint->mtime++;
+    core->csr[TIME] = clint->mtime;
 
     if ((clint->mtimecmp > 0) & (clint->mtime >= clint->mtimecmp)) {
         write_csr(core, MIP, MIP_MTIP);
@@ -1638,10 +1918,12 @@ int emu(int argc, char **argv)
     core = core_init(argc, argv);
 
     while (1) {
-        // tick(core);
+        tick(core);
 
         if ((e = fetch(core)) != OK) {
-            break;
+            trap_handler(core, e, NONE);
+            if (exception_is_fatal(e))
+                break;
         }
 
         if ((e = execute(core)) != OK) {
@@ -1683,7 +1965,11 @@ int main(int argc, char **argv)
     setbuf(stderr, NULL);
 
     if (argc < 2) {
-        printf("Usage: %s <filename>\n", argv[0]);
+        printf(
+            "Usage: %s --bios [<firmware>]\n"
+            "\t\t--kernel [<elf>]\n"
+            "\t\t--rootfs [<rootfs>]\n",
+            argv[0]);
         return -1;
     }
 
