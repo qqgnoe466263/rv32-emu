@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "boot.h"
 #include "elf.h"
 
 #define RAM_SIZE (1024 * 1024 * 128)
@@ -69,6 +70,7 @@ typedef enum {
 /* M mode CSRs */
 enum {
     MSTATUS = 0x300,
+    MISA = 0x301,
     MEDELEG = 0x302,
     MIDELEG,
     MIE,  // Machine Interrupt Enable
@@ -83,6 +85,7 @@ enum {
 enum {
     MSTATUS_MIE = (1 << 3),
     MSTATUS_MPIE = (1 << 7),  // Save Previous MSTATUS_MIE value
+    MSTATUS_MPP = (3 << 11),
 };
 
 /* S mode CSRs */
@@ -192,6 +195,7 @@ typedef enum {
 
 struct rv32_bus {
     u8 *ram;
+    struct rv32_boot *boot;
     struct rv32_uart *uart0;
     struct rv32_clint *clint;
     struct rv32_plic *plic;
@@ -204,6 +208,7 @@ struct rv32_bus {
 
 struct rv32_ctx {
     u32 instr;
+    u32 rsvd;
     u8 encode;  // 0: 32bits, 1: 16bits
 };
 
@@ -483,6 +488,25 @@ bool virtio_is_interrupting(struct rv32_virtio *virtio)
     return false;
 }
 
+exception_t read_boot(u8 *ram, u32 addr, u32 size, u32 *result)
+{
+    u32 idx = (addr - BOOT_ROM_BASE), tmp = 0;
+
+    switch (size) {
+    case 32:
+        tmp |= (u32)(ram[idx + 3]) << 24;
+        tmp |= (u32)(ram[idx + 2]) << 16;
+    case 16:
+        tmp |= (u32)(ram[idx + 1]) << 8;
+    case 8:
+        tmp |= (u32)(ram[idx + 0]) << 0;
+        *result = tmp;
+        return OK;
+    default:
+        return LOAD_ACCESS_FAULT;
+    }
+}
+
 exception_t read_ram(u8 *ram, u32 addr, u32 size, u32 *result)
 {
     u32 idx = (addr - RAM_BASE), tmp = 0;
@@ -522,6 +546,8 @@ exception_t write_ram(u8 *ram, u32 addr, u32 size, u32 value)
 
 exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
 {
+    if (RANGE_CHECK(addr, BOOT_ROM_BASE, 0xf000))
+        return read_boot(bus->boot->mem, addr, size, result);
     if (RAM_BASE <= addr)
         return read_ram(bus->ram, addr, size, result);
     if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
@@ -552,6 +578,24 @@ exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
         return write_virtio(bus->virtio, addr, size, value);
 
     return STORE_AMO_ACCESS_FAULT;
+}
+
+u32 read_csr(struct rv32_core *core, u16 addr)
+{
+    if (addr == SIE)
+        return core->csr[MIE] & core->csr[MIDELEG];
+
+    return core->csr[addr];
+}
+
+void write_csr(struct rv32_core *core, u16 addr, u32 value)
+{
+    if (addr == SIE) {
+        core->csr[MIE] = (core->csr[MIE] & ~core->csr[MIDELEG]) |
+                         (value & core->csr[MIDELEG]);
+        return;
+    }
+    core->csr[addr] = value;
 }
 
 exception_t mmu_translate(struct rv32_core *core,
@@ -781,12 +825,39 @@ struct rv32_bus *bus_init()
     struct rv32_bus *bus = malloc(sizeof(struct rv32_bus));
 
     bus->ram = malloc(sizeof(char) * RAM_SIZE);
+    bus->boot = malloc(sizeof(struct rv32_boot));
     bus->uart0 = uart_init();
     bus->clint = clint_init();
     bus->plic = plic_init();
     bus->virtio = virtio_init(NULL);
 
+    if (!boot_init(bus->boot, RAM_BASE))
+        exit(0);
+
     return bus;
+}
+
+void load_firmware(struct rv32_bus *bus, char *filename)
+{
+    FILE *f = fopen(filename, "rb");
+    if (!f) {
+        printf("Open %s Failed!\n", filename);
+        goto out;
+    }
+
+    fseek(f, 0, SEEK_END);
+    size_t fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fread(bus->ram, fsize, 1, f) != 1) {
+        printf("Read %s Failed!\n", filename);
+        goto out;
+    }
+
+    fclose(f);
+    return;
+out:
+    exit(0);
 }
 
 u32 load_elf(struct rv32_bus *bus, char *filename)
@@ -833,6 +904,21 @@ u8 *load_disk(char *filename)
     return disk;
 }
 
+void csr_init(struct rv32_core *core)
+{
+    memset(&core->csr, '\x00', sizeof(u32) * 4096);
+
+    u32 misa = (1 << 30) |  // RV32
+               (1 << 0) |   // ATOMIC extension
+               (1 << 2) |   // Compressed extension
+               (1 << 8) |   // RV32I/64I/128I base ISA
+               (1 << 12) |  // Integer Multiply/Divide extension
+               (1 << 18) |  // Supervisor mode implemented
+               (1 << 20);   // User mode implemented
+
+    write_csr(core, MISA, misa);
+}
+
 struct rv32_core *core_init(int argc, char **argv)
 {
     struct rv32_core *core = malloc(sizeof(struct rv32_core));
@@ -840,14 +926,18 @@ struct rv32_core *core_init(int argc, char **argv)
     core->bus = bus_init();
     core->mode = MACHINE;
 
-    core->pc = load_elf(core->bus, argv[1]);
+    load_firmware(core->bus, argv[1]);
+    // load_elf(core->bus, argv[2]);
+
+    core->pc = BOOT_ROM_BASE;
 
 #ifndef CONFIG_ARCH_TEST
-    core->bus->virtio = virtio_init(load_disk(argv[2]));
+    core->bus->virtio = virtio_init(load_disk(argv[3]));
 #endif
 
     /* Initialize the SP(x2) */
     core->xreg[2] = RAM_BASE + RAM_SIZE;
+    csr_init(core);
 
     return core;
 }
@@ -879,14 +969,6 @@ exception_t fetch(struct rv32_core *core)
     return OK;
 }
 
-u32 read_csr(struct rv32_core *core, u16 addr)
-{
-    if (addr == SIE)
-        return core->csr[MIE] & core->csr[MIDELEG];
-
-    return core->csr[addr];
-}
-
 #define SATP_SV32 (1 << 31)
 void core_update_paging(struct rv32_core *core, u16 csr_addr)
 {
@@ -899,16 +981,6 @@ void core_update_paging(struct rv32_core *core, u16 csr_addr)
     core->pagetable =
         (read_csr(core, SATP) & (((u32) 1 << 22) - 1)) * PAGE_SIZE;
     core->enable_paging = (1 == (read_csr(core, SATP) >> 31));
-}
-
-void write_csr(struct rv32_core *core, u16 addr, u32 value)
-{
-    if (addr == SIE) {
-        core->csr[MIE] = (core->csr[MIE] & ~core->csr[MIDELEG]) |
-                         (value & core->csr[MIDELEG]);
-        return;
-    }
-    core->csr[addr] = value;
 }
 
 typedef enum {
@@ -1074,6 +1146,23 @@ exception_t execute_32(struct rv32_core *core)
                                     core->xreg[rs2])) != OK)
                 return e;
             core->xreg[rd] = (int) tmp;
+        } else if (func3 == 0x2 && func5 == 0x2) { /* lr.w */
+            u32 addr = core->xreg[rs1];
+            u32 tmp = 0;
+            if ((e = core_read_bus(core, addr, 32, &tmp) != OK))
+                return e;
+            core->xreg[rd] = (s32)(tmp & 0xffffffff);
+            core->ctx.rsvd = addr;
+        } else if (func3 == 0x2 && func5 == 0x3) { /* sc.w */
+            u32 addr = core->xreg[rs1];
+            if (core->ctx.rsvd == addr) {
+                if ((e = core_write_bus(core, addr, 32, core->xreg[rs2])) != OK)
+                    return e;
+                core->xreg[rd] = 0;
+            } else {
+                core->xreg[rd] = 1;
+            }
+            core->ctx.rsvd = (u32) -1;
         } else {
             return ILLEGAL_INSTRUCTION;
         }
@@ -1215,9 +1304,7 @@ exception_t execute_32(struct rv32_core *core)
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 8));
             } else if (rs2 == 0x2 && func7 == 0x18) { /* mret */
                 core->pc = read_csr(core, MEPC);
-                u32 mpp = (read_csr(core, MSTATUS) >> 11) & 3;
-                core->mode =
-                    ((mpp == 2) ? MACHINE : (mpp == 1 ? SUPERVISOR : USER));
+                core->mode = (read_csr(core, MSTATUS) >> 11) & 3;
                 write_csr(core, MSTATUS,
                           ((read_csr(core, MSTATUS) >> 7) & 1)
                               ? read_csr(core, MSTATUS) | (MSTATUS_MIE)
@@ -1510,6 +1597,7 @@ void trap_handler(struct rv32_core *core,
             core->pc = (read_csr(core, STVEC) & ~1) + vec;
         } else
             core->pc = read_csr(core, STVEC);
+
         write_csr(core, SEPC, exception_pc & ~1);
         write_csr(core, SCAUSE, cause);
         write_csr(core, STVAL, 0);
@@ -1546,11 +1634,11 @@ void trap_handler(struct rv32_core *core,
         write_csr(core, MTVAL, 0);
 
         write_csr(core, MSTATUS,
-                  ((read_csr(core, MSTATUS) >> 3) & 1)
-                      ? read_csr(core, MSTATUS) | (MSTATUS_MPIE)
-                      : read_csr(core, MSTATUS) & ~(MSTATUS_MPIE));
-        write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(MSTATUS_MIE));
-        write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(3 << 11));
+                  (read_csr(core, MSTATUS) & ~MSTATUS_MPIE) |
+                      ((read_csr(core, MSTATUS) & MSTATUS_MIE) << 4));
+        write_csr(core, read_csr(core, MSTATUS), ~MSTATUS_MIE);
+        write_csr(core, MSTATUS,
+                  (read_csr(core, MSTATUS) & ~MSTATUS_MPP) | core->mode << 11);
     }
 }
 
