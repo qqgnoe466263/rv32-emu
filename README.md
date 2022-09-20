@@ -9,6 +9,7 @@
 * Support features
     * [DONE] RV32G
     * [WIP ] RV32C
+    * [WIP ] RV32F
     * [DONE] Privilege levels
     * [DONE] CSR
     * [DONE] Sv32
@@ -17,7 +18,7 @@
     * [DONE] PLIC
     * [DONE] VIRTIO
 * Support Kernel
-    * [DONE] xv6-rv32
+    * [WIP ] xv6-rv32 (some bug for current commit)
     * [WIP ] Linux kernel v5.4
 
 ## Build
@@ -136,45 +137,47 @@ Hit any key to stop autoboot:  1
 
 ### Run Linux with OpenSBI [WIP]
 
-* Output
+* Reference Output
+    * Linux's CONFIG_FPU=n.
+    * busybox.bin is produced by myself and it has some d/f instructions.
 ```shell
-$ ./rv_emu --bios fw_jump.bin --kernel Image
+$ ./rv_emu --bios fw_jump.bin --kernel Image --rootfs busybox.bin --dtb dts/riscv_em.dtb
 
-...
-[    3.964569] Key type dns_resolver registered
-[    3.964569] Key type dns_resolver registered
-[    3.993910] VFS: Cannot open root device "vda" or unknown-block(0,0): error -6
-[    3.993910] VFS: Cannot open root device "vda" or unknown-block(0,0): error -6
-[    3.998116] Please append a correct "root=" boot option; here are the available partitions:
-[    3.998116] Please append a correct "root=" boot option; here are the available partitions:
-[    4.003153] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
-[    4.003153] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
-[    4.008104] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.4.0-dirty #31
-[    4.008104] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.4.0-dirty #31
-[    4.011831] Call Trace:
-[    4.011831] Call Trace:
-[    4.013780] [<c0032602>] walk_stackframe+0x0/0xa6
-[    4.013780] [<c0032602>] walk_stackframe+0x0/0xa6
-[    4.016916] [<c0032776>] show_stack+0x28/0x32
-[    4.016916] [<c0032776>] show_stack+0x28/0x32
-[    4.019804] [<c05fbe4a>] dump_stack+0x6a/0x86
-[    4.019804] [<c05fbe4a>] dump_stack+0x6a/0x86
-[    4.022686] [<c0037300>] panic+0xdc/0x23c
-[    4.022686] [<c0037300>] panic+0xdc/0x23c
-[    4.025405] [<c0000efa>] mount_block_root+0x182/0x214
-[    4.025405] [<c0000efa>] mount_block_root+0x182/0x214
-[    4.028656] [<c0001076>] mount_root+0xea/0x100
-[    4.028656] [<c0001076>] mount_root+0xea/0x100
-[    4.031614] [<c0001190>] prepare_namespace+0x104/0x14c
-[    4.031614] [<c0001190>] prepare_namespace+0x104/0x14c
-[    4.034937] [<c0000b9a>] kernel_init_freeable+0x18a/0x1a6
-[    4.034937] [<c0000b9a>] kernel_init_freeable+0x18a/0x1a6
-[    4.038443] [<c0611520>] kernel_init+0x12/0xf0
-[    4.038443] [<c0611520>] kernel_init+0x12/0xf0
-[    4.041426] [<c0031400>] ret_from_exception+0x0/0xc
-[    4.041426] [<c0031400>] ret_from_exception+0x0/0xc
-[    4.044627] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0) ]---
-[    4.044627] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0) ]---
+[    3.734323] EXT4-fs (vda): mounting ext2 file system using the ext4 subsystem
+[    3.785606] EXT4-fs (vda): warning: mounting unchecked fs, running e2fsck is recommended
+[    3.799403] EXT4-fs (vda): mounted filesystem without journal. Opts: (null)
+[    3.801502] VFS: Mounted root (ext2 filesystem) on device 254:0.
+[    3.806203] devtmpfs: mounted
+[    3.814009] Freeing unused kernel memory: 192K
+[    3.814907] This architecture does not have kernel memory protection.
+[    3.816059] Run /sbin/init as init process
+[    3.891741] init[1]: unhandled signal 4 code 0x1 at 0x001813c6 in busybox[10000+18d000]
+[    3.893712] CPU: 0 PID: 1 Comm: init Not tainted 5.4.0 #125
+[    3.894879] sepc: 001813c6 ra : 000c3f5a sp : 9c9a1de0
+[    3.895960]  gp : 001a07c0 tp : 00000000 t0 : 00000000
+[    3.897027]  t1 : 00000000 t2 : 00000000 s0 : 00000000
+[    3.898111]  s1 : 00000000 a0 : 9c9a1f28 a1 : 00000000
+[    3.899196]  a2 : 00000000 a3 : 0018134c a4 : 0000001e
+[    3.900276]  a5 : 001813c4 a6 : 00000000 a7 : 00000000
+[    3.901343]  s2 : 00000000 s3 : 00000000 s4 : 00000000
+[    3.902410]  s5 : 00000000 s6 : 00000000 s7 : 00000000
+[    3.903477]  s8 : 00000000 s9 : 00000000 s10: 00000000
+[    3.904544]  s11: 00000000 t3 : 00000000 t4 : 00000000
+[    3.905561]  t5 : 00000000 t6 : 00000000
+[    3.906505] sstatus: 00000020 sbadaddr: 00000010 scause: 00000002
+[    3.912163] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004
+[    3.913665] CPU: 0 PID: 1 Comm: init Not tainted 5.4.0 #125
+[    3.914660] Call Trace:
+[    3.915606] [<c00322c6>] walk_stackframe+0x0/0xa6
+[    3.916822] [<c003243a>] show_stack+0x28/0x32
+[    3.917930] [<c05fb9f4>] dump_stack+0x6a/0x86
+[    3.919031] [<c0036eae>] panic+0xdc/0x23c
+[    3.920104] [<c0038cf8>] do_exit+0x6f6/0x71a
+[    3.921221] [<c00397d6>] do_group_exit+0x2a/0x7a
+[    3.922382] [<c00425d4>] get_signal+0x108/0x6c0
+[    3.923575] [<c0031ae2>] do_notify_resume+0x42/0x270
+[    3.924809] [<c00313f0>] ret_from_exception+0x0/0xc
+[    3.926011] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004 ]---
 ```
 ## Compliance Test
 

@@ -115,6 +115,7 @@ enum {
 enum {
     SSTATUS = 0x100,
     SEDELEG = 0x102,
+    SIDELEG = 0x103,
     SIE = 0x104,
     STVEC,
     SEPC = 0x141,
@@ -212,6 +213,7 @@ struct rv32_plic {
 #define VIRTIO_INTERRUPT_STATUS (VIRTIO_BASE + 0x060)
 #define VIRTIO_INTERRUPT_ACK (VIRTIO_BASE + 0x064)
 #define VIRTIO_STATUS (VIRTIO_BASE + 0x70)
+#define VIRTIO_CONFIG (VIRTIO_BASE + 0x100)
 
 struct rv32_virtio {
     u32 id;
@@ -221,9 +223,9 @@ struct rv32_virtio {
     u32 q_num;
     u32 q_pfn;
     u32 q_notify;
-    u32 intr_status;
-    u32 intr_ack;
+    u32 isr;
     u32 status;
+    u8 config[8];
     u8 *disk;
 };
 
@@ -251,6 +253,7 @@ struct rv32_ctx {
     u32 rsvd;
     bool call;  // into ecall
     u8 encode;  // 0: 32bits, 1: 16bits
+    u32 stval;
 };
 
 struct rv32_core {
@@ -387,6 +390,9 @@ exception_t read_plic(struct rv32_plic *plic, u32 addr, u32 size, u32 *result)
     return OK;
 }
 
+/* TODO */
+int is_claim_complete = 0;
+
 exception_t write_plic(struct rv32_plic *plic, u32 addr, u32 size, u32 value)
 {
     if (size != 32)
@@ -403,7 +409,14 @@ exception_t write_plic(struct rv32_plic *plic, u32 addr, u32 size, u32 value)
         plic->priority = value;
         break;
     case PLIC_CLAIM:
-        plic->claim = value;
+        /* TODO */
+        if (!(is_claim_complete == value)) {
+            plic->claim = value;
+            is_claim_complete = value;
+        } else {
+            plic->claim = 0;
+            is_claim_complete = 0;
+        }
         break;
     }
 
@@ -415,6 +428,14 @@ exception_t read_virtio(struct rv32_virtio *virtio,
                         u32 size,
                         u32 *result)
 {
+    if (addr >= VIRTIO_CONFIG) {
+        int index = addr - VIRTIO_CONFIG;
+        if (index >= 8)
+            return LOAD_ACCESS_FAULT;
+        *result = virtio->config[index];
+        return OK;
+    }
+
     if (size != 32)
         return LOAD_ACCESS_FAULT;
 
@@ -432,22 +453,19 @@ exception_t read_virtio(struct rv32_virtio *virtio,
         *result = 0x554d4551;
         break;
     case VIRTIO_DEVICE_FEATURES:
-        *result = 0;
+        *result = 0;  // 1 << 28;
         break;
     case VIRTIO_DRIVER_FEATURES:
         *result = virtio->driver_features;
         break;
     case VIRTIO_QUEUE_NUM_MAX:
-        *result = 8;
+        *result = VIRTIO_DESC_NUM;
         break;
     case VIRTIO_QUEUE_PFN:
         *result = virtio->q_pfn;
         break;
     case VIRTIO_INTERRUPT_STATUS:
-        *result = virtio->intr_status;
-        break;
-    case VIRTIO_INTERRUPT_ACK:
-        *result = virtio->intr_ack;
+        *result = virtio->isr;
         break;
     case VIRTIO_STATUS:
         *result = virtio->status;
@@ -464,6 +482,14 @@ exception_t write_virtio(struct rv32_virtio *virtio,
                          u32 size,
                          u32 value)
 {
+    if (addr >= VIRTIO_CONFIG) {
+        int index = addr - VIRTIO_CONFIG;
+        if (index >= 8)
+            return LOAD_ACCESS_FAULT;
+        virtio->config[index] = (value >> (index * 8)) & 0xff;
+        return OK;
+    }
+
     if (size != 32)
         return STORE_AMO_ACCESS_FAULT;
 
@@ -486,11 +512,8 @@ exception_t write_virtio(struct rv32_virtio *virtio,
     case VIRTIO_QUEUE_NOTIFY:
         virtio->q_notify = value;
         break;
-    case VIRTIO_INTERRUPT_STATUS:
-        virtio->intr_status = value;
-        break;
     case VIRTIO_INTERRUPT_ACK:
-        virtio->intr_ack = value;
+        virtio->isr &= ~(value & 0xff);
         break;
     case VIRTIO_STATUS:
         virtio->status = value;
@@ -523,6 +546,7 @@ u32 virtio_new_id(struct rv32_virtio *virtio)
 bool virtio_is_interrupting(struct rv32_virtio *virtio)
 {
     if (virtio->q_notify != -1) {
+        virtio->isr |= 1;
         virtio->q_notify = -1;
         return true;
     }
@@ -676,9 +700,11 @@ exception_t mmu_translate(struct rv32_core *core,
         return OK;
     }
 
-    if (core->ctx.call) {
-        *result = addr;
-        return OK;
+    if (core->mode == MACHINE) {
+        if ((access == ACCESS_INSTR) || !(read_csr(core, MSTATUS) & 0x20000)) {
+            *result = addr;
+            return OK;
+        }
     }
 
     u32 vpn[] = {
@@ -746,6 +772,9 @@ exception_t mmu_translate(struct rv32_core *core,
     }
 
 fail:
+
+    core->ctx.stval = addr;
+
     switch (access) {
     case ACCESS_INSTR:
         return INSTRUCTION_PAGE_FAULT;
@@ -787,17 +816,40 @@ exception_t core_write_bus(struct rv32_core *core,
     return write_bus(core->bus, pa, size, value);
 }
 
-void bus_disk_access(struct rv32_bus *bus)
+void bus_disk_access(struct rv32_core *core)
 {
+    struct rv32_bus *bus = core->bus;
+
     u32 desc_addr = virtio_desc_addr(bus->virtio);
-    u32 avail_addr = desc_addr + 0x40, used_addr = desc_addr + 4096;
+    u32 avail_addr = desc_addr + (VIRTIO_DESC_NUM * 0x10), used_addr = desc_addr + 4096;
+
+#if 0  // TODO
+    desc_addr = 0xc776a000;
+    avail_addr = 0xc776a040;
+    used_addr = 0xc776b000;
+
+    exception_t e = mmu_translate(core, desc_addr, LOAD_PAGE_FAULT, &desc_addr,
+                                  ACCESS_LOAD);
+    if (e != OK)
+        exit(0);
+
+    e = mmu_translate(core, avail_addr, LOAD_PAGE_FAULT, &avail_addr,
+                      ACCESS_LOAD);
+    if (e != OK)
+        exit(0);
+
+    e = mmu_translate(core, used_addr, LOAD_PAGE_FAULT, &used_addr,
+                      ACCESS_LOAD);
+    if (e != OK)
+        exit(0);
+#endif
 
     u32 offset;
-    if (read_bus(bus, avail_addr + 1, 16, &offset) != OK)
+    if (read_bus(bus, avail_addr + 2, 16, &offset) != OK)
         pr_err("read offset");
 
     u32 idx;
-    if (read_bus(bus, avail_addr + (offset % VIRTIO_DESC_NUM) + 2, 16, &idx) !=
+    if (read_bus(bus, avail_addr + (offset % VIRTIO_DESC_NUM) + 4, 16, &idx) !=
         OK)
         pr_err("read index");
 
@@ -805,6 +857,14 @@ void bus_disk_access(struct rv32_bus *bus)
     u32 addr0;
     if (read_bus(bus, desc_addr0, 32, &addr0) != OK)
         pr_err("read address field in descriptor");
+
+    u32 len0;
+    if (read_bus(bus, desc_addr0 + 8, 32, &len0) != OK)
+        pr_err("read length field in descriptor");
+
+    u32 flags0;
+    if (read_bus(bus, desc_addr0 + 12, 16, &flags0) != OK)
+        pr_err("read flags field in descriptor");
 
     u32 next0;
     if (read_bus(bus, desc_addr0 + 14, 16, &next0) != OK)
@@ -818,16 +878,42 @@ void bus_disk_access(struct rv32_bus *bus)
     u32 len1;
     if (read_bus(bus, desc_addr1 + 8, 32, &len1) != OK)
         pr_err("read length field in descriptor");
+
     u32 flags1;
     if (read_bus(bus, desc_addr1 + 12, 16, &flags1) != OK)
         pr_err("read flags field in descriptor");
+
+    u32 next1;
+    if (read_bus(bus, desc_addr1 + 14, 16, &next1) != OK)
+        pr_err("read next field in descriptor");
+
+    u32 desc_addr2 = desc_addr + VIRTIO_VRING_DESC_SIZE * next1;
+    u32 addr2;
+    if (read_bus(bus, desc_addr2, 32, &addr2) != OK)
+        pr_err("read address field in descriptor");
+
+    u32 len2;
+    if (read_bus(bus, desc_addr2 + 8, 32, &len2) != OK)
+        pr_err("read length field in descriptor");
+
+    u32 flags2;
+    if (read_bus(bus, desc_addr2 + 12, 16, &flags2) != OK)
+        pr_err("read flags field in descriptor");
+
+    u32 next2;
+    if (read_bus(bus, desc_addr2 + 14, 16, &next2) != OK)
+        pr_err("read next field in descriptor");
+
+    u32 blk_type;
+    if (read_bus(bus, addr0, 32, &blk_type) != OK)
+        pr_err("read sector field in virtio_blk_outhdr");
 
     u32 blk_sector;
     if (read_bus(bus, addr0 + 8, 32, &blk_sector) != OK)
         pr_err("read sector field in virtio_blk_outhdr");
 
-    if (!(flags1 & 2)) {
-        /* Read RAM data and write it to a disk directly (DMA). */
+    if (blk_type == 1) {
+        // write
         for (u32 i = 0; i < len1; i++) {
             u32 data;
             if (read_bus(bus, addr1 + i, 8, &data) != OK)
@@ -835,7 +921,6 @@ void bus_disk_access(struct rv32_bus *bus)
             virtio_disk_write(bus->virtio, blk_sector * 512 + i, data);
         }
     } else {
-        /* Read Disk data and write it to a RAM directly (DMA). */
         for (u32 i = 0; i < len1; i++) {
             u32 data = virtio_disk_read(bus->virtio, blk_sector * 512 + i);
             if (write_bus(bus, addr1 + i, 8, data) != OK)
@@ -843,8 +928,18 @@ void bus_disk_access(struct rv32_bus *bus)
         }
     }
 
+    if (write_bus(bus,
+                  used_addr + 8 + ((bus->virtio->id % VIRTIO_DESC_NUM) * 8), 16,
+                  len1 + len2) != OK)
+        pr_err("write to RAM");
+
+    if (write_bus(bus,
+                  used_addr + 4 + ((bus->virtio->id % VIRTIO_DESC_NUM) * 8), 16,
+                  idx) != OK)
+        pr_err("write to RAM");
+
     u32 new_id = virtio_new_id(bus->virtio);
-    if (write_bus(bus, used_addr + 2, 16, new_id % 8) != OK)
+    if (write_bus(bus, used_addr + 2, 16, new_id) != OK)
         pr_err("write to RAM");
 }
 
@@ -917,6 +1012,10 @@ struct rv32_plic *plic_init()
 struct rv32_virtio *virtio_init(u8 *disk)
 {
     struct rv32_virtio *vio = malloc(sizeof(struct rv32_virtio));
+    memset(vio, 0, sizeof(struct rv32_virtio));
+
+    vio->config[1] = 0x00;
+    vio->config[2] = 0x01;
     vio->disk = disk;
     vio->q_notify = -1;
 
@@ -1473,8 +1572,7 @@ exception_t execute_32(struct rv32_core *core)
                 return BREAKPOINT;
             } else if (rs2 == 0x2 && func7 == 0x8) { /* sret */
                 core->pc = read_csr(core, SEPC);
-                core->mode =
-                    ((read_csr(core, SSTATUS) >> 8) & 1) ? SUPERVISOR : USER;
+                core->mode = read_csr(core, SSTATUS) >> 8;
                 write_csr(core, SSTATUS,
                           ((read_csr(core, SSTATUS) >> 5) & 1)
                               ? read_csr(core, SSTATUS) | (1 << 1)
@@ -1492,6 +1590,8 @@ exception_t execute_32(struct rv32_core *core)
                 write_csr(core, MSTATUS,
                           read_csr(core, MSTATUS) | (MSTATUS_MPIE));
                 write_csr(core, MSTATUS, read_csr(core, MSTATUS) & ~(3 << 11));
+            } else { /* sfence.vma */
+                // printf("sfence.vma, 0x%x\n", core->pc);
             }
             break;
         case 0x1: { /* csrrw */
@@ -1776,11 +1876,22 @@ void trap_handler(struct rv32_core *core,
     }
 
     // Delegate to lower privilege mode if needed
-    if (((read_csr(core, MEDELEG) >> cause) & 1) == 0)
-        core->mode = MACHINE;
-    else {
-        if (((read_csr(core, SEDELEG) >> cause) & 1) == 0)
-            core->mode = SUPERVISOR;
+    if (is_interrupt) {
+        if (((read_csr(core, MIDELEG) >> cause) & 1) == 0)
+            core->mode = MACHINE;
+        else {
+            if (((read_csr(core, SIDELEG) >> cause) & 1) == 0)
+                core->mode = SUPERVISOR;
+        }
+    } else {
+        if (((read_csr(core, MEDELEG) >> cause) & 1) == 0)
+            core->mode = MACHINE;
+        else {
+            if (((read_csr(core, SEDELEG) >> cause) & 1) == 0)
+                core->mode = SUPERVISOR;
+            else
+                core->mode = USER;
+        }
     }
 
     if (is_interrupt)
@@ -1789,14 +1900,17 @@ void trap_handler(struct rv32_core *core,
     if (core->mode == SUPERVISOR) {
         /* Set PC to handler routine address */
         if (is_interrupt) {
-            u32 vec = (read_csr(core, STVEC) & 1) ? 4 * cause : 0;
-            core->pc = (read_csr(core, STVEC) & ~1) + vec;
+            u32 stvec = read_csr(core, STVEC);
+            if (stvec & 0x1)
+                core->pc = (stvec & ~0x3) + 4 * cause;
+            else
+                core->pc = stvec & ~0x3;
         } else
             core->pc = read_csr(core, STVEC) & ~0x3;
 
         write_csr(core, SEPC, exception_pc & ~1);
         write_csr(core, SCAUSE, cause);
-        write_csr(core, STVAL, 0);
+        write_csr(core, STVAL, core->ctx.stval);
 
         u32 sstatus = read_csr(core, SSTATUS);
         write_csr(core, SSTATUS,
@@ -1807,8 +1921,11 @@ void trap_handler(struct rv32_core *core,
     } else if (core->mode == MACHINE) {
         /* Set PC to handler routine address */
         if (is_interrupt) {
-            u32 vec = (read_csr(core, MTVEC) & 1) ? 4 * cause : 0;
-            core->pc = (read_csr(core, MTVEC) & ~1) + vec;
+            u32 mtvec = read_csr(core, MTVEC);
+            if (mtvec & 0x1)
+                core->pc = (mtvec & ~0x3) + 4 * cause;
+            else
+                core->pc = mtvec & ~0x3;
         } else
             core->pc = read_csr(core, MTVEC) & ~0x3;
 
@@ -1830,6 +1947,8 @@ void trap_handler(struct rv32_core *core,
         clear_csr_bits(core, MSTATUS, MSTATUS_MIE);
         mstatus = read_csr(core, MSTATUS);
         write_csr(core, MSTATUS, (mstatus & ~MSTATUS_MPP) | prev_mode << 11);
+    } else if (core->mode == USER) {
+        exit(0);
     }
 }
 
@@ -1850,11 +1969,10 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
         if (uart_is_interrupting(core->bus->uart0)) {
             irq = UART_IRQ;
         } else if (virtio_is_interrupting(core->bus->virtio)) {
-            bus_disk_access(core->bus);
+            bus_disk_access(core);
             irq = VIRTIO_IRQ;
         } else
             break;
-
         write_bus(core->bus, PLIC_CLAIM, 32, irq);
         write_csr(core, MIP, read_csr(core, MIP) | MIP_SEIP);
     } while (0);
@@ -1918,10 +2036,17 @@ int emu(int argc, char **argv)
     core = core_init(argc, argv);
 
     while (1) {
+        /* FIXME:
+         * Tick causes xv6-rv32 booting hanging.
+         * Bus now we need this function to boot linux 5.4.
+         */
         tick(core);
 
+re_fetch:
         if ((e = fetch(core)) != OK) {
             trap_handler(core, e, NONE);
+            if (e == INSTRUCTION_PAGE_FAULT)
+                goto re_fetch;
             if (exception_is_fatal(e))
                 break;
         }

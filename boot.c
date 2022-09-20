@@ -16,7 +16,7 @@ static char dtb_filename[] = "./emu.dtb";
  *  - https://github.com/riscv/riscv-isa-sim/blob/master/riscv/dts.cc
  */
 
-// TODO: don't mash all codes together for flexibility
+// TODO: this might be incorrect for the emulating hw of this emulator
 static bool make_dtb()
 {
     char dts_str[] =
