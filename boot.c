@@ -16,6 +16,25 @@ static char dtb_filename[] = "./emu.dtb";
  *  - https://github.com/riscv/riscv-isa-sim/blob/master/riscv/dts.cc
  */
 
+exception_t read_boot(u8 *ram, u32 addr, u32 size, u32 *result)
+{
+    u32 idx = (addr - BOOT_ROM_BASE), tmp = 0;
+
+    switch (size) {
+    case 32:
+        tmp |= (u32)(ram[idx + 3]) << 24;
+        tmp |= (u32)(ram[idx + 2]) << 16;
+    case 16:
+        tmp |= (u32)(ram[idx + 1]) << 8;
+    case 8:
+        tmp |= (u32)(ram[idx + 0]) << 0;
+        *result = tmp;
+        return OK;
+    default:
+        return LOAD_ACCESS_FAULT;
+    }
+}
+
 // TODO: this might be incorrect for the emulating hw of this emulator
 static bool make_dtb()
 {

@@ -15,4 +15,11 @@ typedef signed int s32;
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
+static inline void pr_err(const char *msg)
+{
+    fprintf(stderr, "[!] Failed to %s\n", msg);
+    exit(1);
+}
+
+
 #endif

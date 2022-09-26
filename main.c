@@ -8,27 +8,13 @@
 #include <unistd.h>
 
 #include "boot.h"
+#include "bus.h"
+#include "clint.h"
 #include "elf.h"
-
-#define RAM_SIZE (1024 * 1024 * 256)
-#define RAM_BASE (0x80000000)
-
-#define PAGE_SIZE (4096)
-
-#define CLINT_BASE (0x2000000)
-#define CLINT_SIZE (0x10000)
-#define CLINT_MTIMECMP (CLINT_BASE + 0x4000)
-#define CLINT_MTIME (CLINT_BASE + 0xbff8)
-
-#define PLIC_BASE (0xc000000)
-#define PLIC_SIZE (0x4000000)
-#define PLIC_PENDING (PLIC_BASE + 0x1000)  // Start of pending array (read-only)
-#define PLIC_ENABLE (PLIC_BASE + 0x2080)   // Target 0 enables
-#define PLIC_PRIORITY (PLIC_BASE + 0x201000)  // Target 0 priority threshold
-#define PLIC_CLAIM (PLIC_BASE + 0x201004)     // Target 0 claim/complete
-
-#define RANGE_CHECK(x, minx, size) \
-    ((int) ((x - minx) | (minx + size - 1 - x)) >= 0)
+#include "plic.h"
+#include "trap.h"
+#include "uart.h"
+#include "virtio.h"
 
 #if CONFIG_ARCH_TEST
 static char signature_out_file[256];
@@ -47,40 +33,13 @@ typedef enum {
     ACCESS_STORE,
 } access_t;
 
-typedef enum {
-    OK = -1,
-    INSTRUCTION_ADDRESS_MISALIGNED = 0,
-    INSTRUCTION_ACCESS_FAULT = 1,
-    ILLEGAL_INSTRUCTION = 2,
-    BREAKPOINT = 3,
-    LOAD_ADDRESS_MISALIGNED = 4,
-    LOAD_ACCESS_FAULT = 5,
-    STORE_AMO_ADDRESS_MISALIGNED = 6,
-    STORE_AMO_ACCESS_FAULT = 7,
-    ECALL_FROM_U_MODE = 8,
-    ECALL_FROM_S_MODE = 9,
-    INSTRUCTION_PAGE_FAULT = 12,
-    LOAD_PAGE_FAULT = 13,
-    STORE_PAGE_FAULT = 15,
-} exception_t;
-
-typedef enum {
-    NONE = -1,
-    SUPERVISOR_SOFTWARE_INTERRUPT = 1,
-    MACHINE_SOFTWARE_INTERRUPT = 3,
-    SUPERVISOR_TIMER_INTERRUPT = 5,
-    MACHINE_TIMER_INTERRUPT = 7,
-    SUPERVISOR_EXTERNAL_INTERRUPT = 9,
-    MACHINE_EXTERNAL_INTERRUPT = 11,
-} interrupt_t;
-
 /* M mode CSRs */
 enum {
     MSTATUS = 0x300,
     MISA = 0x301,
-    MEDELEG = 0x302,
-    MIDELEG,
-    MIE,  // Machine Interrupt Enable
+    MEDELEG = 0x302,  // Machine Exception DELEGation
+    MIDELEG,          // Machine Interrupt DELEGation
+    MIE,              // Machine Interrupt Enable
     MTVEC = 0x305,
     MEPC = 0x341,
     MCAUSE,
@@ -91,7 +50,7 @@ enum {
 
 /* MSTATUS */
 enum {
-    MSTATUS_MIE = 0x8,
+    MSTATUS_MIE = 0x8,    // 1:Enable, 0:Disable
     MSTATUS_MPIE = 0x80,  // Save Previous MSTATUS_MIE value
     MSTATUS_MPP = 0x1800,
 };
@@ -158,100 +117,15 @@ enum {
 #define clear_csr_bits(core, csr, mask) \
     write_csr(core, csr, read_csr(core, csr) & ~mask)
 
-#define UART_BASE (0x10000000)
-#define UART_SIZE (0x100)
-#define UART_THR (UART_BASE + 0)  // TX
-#define UART_RHR (UART_BASE + 0)  // RX
-#define UART_LSR (UART_BASE + 5)
-#define UART_LSR_RX_EMPTY (1 << 0)
-#define UART_LSR_TX_EMPTY (1 << 5)
-#define UART_LSR_THR_SR_EMPTY (1 << 6)
-
-struct rv32_uart {
-    u8 data[UART_SIZE];
-    bool interrupting;
-
-    pthread_t tid;
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
-};
-
-struct rv32_clint {
-    u32 mtime;
-    u32 mtimecmp;
-};
-
-struct rv32_plic {
-    u32 pending;
-    u32 enable;
-    u32 priority;
-    u32 claim;
-};
-
-/* Virtio */
-/* https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-146001r1
- */
-#define VIRTIO_VRING_DESC_SIZE 16
-#define VIRTIO_DESC_NUM 8
-
-#define VIRTIO_BASE (0x10001000)
-#define VIRTIO_SIZE (0x1000)
-/* Legacy interface */
-#define VIRTIO_GUEST_PAGE_SIZE (VIRTIO_BASE + 0x28)
-#define VIRTIO_QUEUE_PFN (VIRTIO_BASE + 0x40)
-/* Virtio Over MMIO */
-#define VIRTIO_MAGIC (VIRTIO_BASE + 0x0)
-#define VIRTIO_VERSION (VIRTIO_BASE + 0x4)
-#define VIRTIO_DEVICE_ID (VIRTIO_BASE + 0x8)
-#define VIRTIO_VENDOR_ID (VIRTIO_BASE + 0xc)
-#define VIRTIO_DEVICE_FEATURES (VIRTIO_BASE + 0x10)
-#define VIRTIO_DRIVER_FEATURES (VIRTIO_BASE + 0x20)
-#define VIRTIO_QUEUE_SEL (VIRTIO_BASE + 0x30)
-#define VIRTIO_QUEUE_NUM_MAX (VIRTIO_BASE + 0x34)
-#define VIRTIO_QUEUE_NUM (VIRTIO_BASE + 0x38)
-#define VIRTIO_QUEUE_NOTIFY (VIRTIO_BASE + 0x50)
-#define VIRTIO_INTERRUPT_STATUS (VIRTIO_BASE + 0x060)
-#define VIRTIO_INTERRUPT_ACK (VIRTIO_BASE + 0x064)
-#define VIRTIO_STATUS (VIRTIO_BASE + 0x70)
-#define VIRTIO_CONFIG (VIRTIO_BASE + 0x100)
-
-struct rv32_virtio {
-    u32 id;
-    u32 driver_features;
-    u32 page_size;
-    u32 q_sel;
-    u32 q_num;
-    u32 q_pfn;
-    u32 q_notify;
-    u32 isr;
-    u32 status;
-    u8 config[8];
-    u8 *disk;
-};
-
 typedef enum {
     USER = 0x0,
     SUPERVISOR = 0x1,
     MACHINE = 0x3,
 } core_mode_t;
 
-struct rv32_bus {
-    u8 *ram;
-    struct rv32_boot *boot;
-    struct rv32_uart *uart0;
-    struct rv32_clint *clint;
-    struct rv32_plic *plic;
-    struct rv32_virtio *virtio;
-
-#if CONFIG_ARCH_TEST
-    struct rv32_sig sig;
-#endif
-};
-
 struct rv32_ctx {
     u32 instr;
     u32 rsvd;
-    bool call;  // into ecall
     u8 encode;  // 0: 32bits, 1: 16bits
     u32 stval;
 };
@@ -270,12 +144,6 @@ struct rv32_core {
     struct rv32_ctx ctx;
 };
 
-void pr_err(const char *msg)
-{
-    fprintf(stderr, "[!] Failed to %s\n", msg);
-    exit(1);
-}
-
 bool exception_is_fatal(exception_t e)
 {
     switch (e) {
@@ -288,361 +156,6 @@ bool exception_is_fatal(exception_t e)
     default:
         return false;
     }
-}
-
-exception_t read_uart(struct rv32_uart *uart, u32 addr, u32 size, u32 *result)
-{
-    if (size != 8)
-        return LOAD_ACCESS_FAULT;
-
-    pthread_mutex_lock(&uart->lock);
-    switch (addr) {
-    case UART_RHR:
-        pthread_cond_broadcast(&uart->cond);  // wake up thread
-        uart->data[UART_LSR - UART_BASE] &= ~UART_LSR_RX_EMPTY;
-    default:
-        *result = uart->data[addr - UART_BASE];
-    }
-    pthread_mutex_unlock(&uart->lock);
-
-    return OK;
-}
-
-exception_t write_uart(struct rv32_uart *uart, u32 addr, u32 size, u32 value)
-{
-    if (size != 8)
-        return STORE_AMO_ACCESS_FAULT;
-
-    pthread_mutex_lock(&uart->lock);
-    switch (addr) {
-    case UART_THR:
-        fprintf(stdout, "%c", (value & 0xff));
-        break;
-    default:
-        uart->data[addr - UART_BASE] = (value & 0xff);
-    }
-    pthread_mutex_unlock(&uart->lock);
-
-    return OK;
-}
-
-exception_t read_clint(struct rv32_clint *clint,
-                       u32 addr,
-                       u32 size,
-                       u32 *result)
-{
-    if (size != 32)
-        return LOAD_ACCESS_FAULT;
-
-    switch (addr) {
-    case CLINT_MTIMECMP:
-        *result = clint->mtimecmp;
-        break;
-    case CLINT_MTIME:
-        *result = clint->mtime;
-        break;
-    default:
-        *result = 0;
-    }
-
-    return OK;
-}
-
-exception_t write_clint(struct rv32_clint *clint, u32 addr, u32 size, u32 value)
-{
-    if (size != 32)
-        return STORE_AMO_ACCESS_FAULT;
-
-    switch (addr) {
-    case CLINT_MTIMECMP:
-        clint->mtimecmp = value;
-        break;
-    case CLINT_MTIME:
-        clint->mtime = value;
-        break;
-    }
-
-    return OK;
-}
-
-exception_t read_plic(struct rv32_plic *plic, u32 addr, u32 size, u32 *result)
-{
-    if (size != 32)
-        return LOAD_ACCESS_FAULT;
-
-    switch (addr) {
-    case PLIC_PENDING:
-        *result = plic->pending;
-        break;
-    case PLIC_ENABLE:
-        *result = plic->enable;
-        break;
-    case PLIC_PRIORITY:
-        *result = plic->priority;
-        break;
-    case PLIC_CLAIM:
-        *result = plic->claim;
-        break;
-    default:
-        *result = 0;
-    }
-
-    return OK;
-}
-
-/* TODO */
-int is_claim_complete = 0;
-
-exception_t write_plic(struct rv32_plic *plic, u32 addr, u32 size, u32 value)
-{
-    if (size != 32)
-        return STORE_AMO_ACCESS_FAULT;
-
-    switch (addr) {
-    case PLIC_PENDING:
-        plic->pending = value;
-        break;
-    case PLIC_ENABLE:
-        plic->enable = value;
-        break;
-    case PLIC_PRIORITY:
-        plic->priority = value;
-        break;
-    case PLIC_CLAIM:
-        /* TODO */
-        if (!(is_claim_complete == value)) {
-            plic->claim = value;
-            is_claim_complete = value;
-        } else {
-            plic->claim = 0;
-            is_claim_complete = 0;
-        }
-        break;
-    }
-
-    return OK;
-}
-
-exception_t read_virtio(struct rv32_virtio *virtio,
-                        u32 addr,
-                        u32 size,
-                        u32 *result)
-{
-    if (addr >= VIRTIO_CONFIG) {
-        int index = addr - VIRTIO_CONFIG;
-        if (index >= 8)
-            return LOAD_ACCESS_FAULT;
-        *result = virtio->config[index];
-        return OK;
-    }
-
-    if (size != 32)
-        return LOAD_ACCESS_FAULT;
-
-    switch (addr) {
-    case VIRTIO_MAGIC:
-        *result = 0x74726976;
-        break;
-    case VIRTIO_VERSION:
-        *result = 0x1;
-        break;
-    case VIRTIO_DEVICE_ID:
-        *result = 0x2;
-        break;
-    case VIRTIO_VENDOR_ID:
-        *result = 0x554d4551;
-        break;
-    case VIRTIO_DEVICE_FEATURES:
-        *result = 0;  // 1 << 28;
-        break;
-    case VIRTIO_DRIVER_FEATURES:
-        *result = virtio->driver_features;
-        break;
-    case VIRTIO_QUEUE_NUM_MAX:
-        *result = VIRTIO_DESC_NUM;
-        break;
-    case VIRTIO_QUEUE_PFN:
-        *result = virtio->q_pfn;
-        break;
-    case VIRTIO_INTERRUPT_STATUS:
-        *result = virtio->isr;
-        break;
-    case VIRTIO_STATUS:
-        *result = virtio->status;
-        break;
-    default:
-        *result = 0;
-    }
-
-    return OK;
-}
-
-exception_t write_virtio(struct rv32_virtio *virtio,
-                         u32 addr,
-                         u32 size,
-                         u32 value)
-{
-    if (addr >= VIRTIO_CONFIG) {
-        int index = addr - VIRTIO_CONFIG;
-        if (index >= 8)
-            return LOAD_ACCESS_FAULT;
-        virtio->config[index] = (value >> (index * 8)) & 0xff;
-        return OK;
-    }
-
-    if (size != 32)
-        return STORE_AMO_ACCESS_FAULT;
-
-    switch (addr) {
-    case VIRTIO_DEVICE_FEATURES:
-        virtio->driver_features = value;
-        break;
-    case VIRTIO_GUEST_PAGE_SIZE:
-        virtio->page_size = value;
-        break;
-    case VIRTIO_QUEUE_SEL:
-        virtio->q_sel = value;
-        break;
-    case VIRTIO_QUEUE_NUM:
-        virtio->q_num = value;
-        break;
-    case VIRTIO_QUEUE_PFN:
-        virtio->q_pfn = value;
-        break;
-    case VIRTIO_QUEUE_NOTIFY:
-        virtio->q_notify = value;
-        break;
-    case VIRTIO_INTERRUPT_ACK:
-        virtio->isr &= ~(value & 0xff);
-        break;
-    case VIRTIO_STATUS:
-        virtio->status = value;
-        break;
-    }
-
-    return OK;
-}
-
-u32 virtio_desc_addr(struct rv32_virtio *virtio)
-{
-    return (u32) virtio->q_pfn * (u32) virtio->page_size;
-}
-
-u32 virtio_disk_read(const struct rv32_virtio *virtio, u32 addr)
-{
-    return virtio->disk[addr];
-}
-
-void virtio_disk_write(const struct rv32_virtio *virtio, u32 addr, u32 value)
-{
-    virtio->disk[addr] = (u8) value;
-}
-
-u32 virtio_new_id(struct rv32_virtio *virtio)
-{
-    return ++(virtio->id);
-}
-
-bool virtio_is_interrupting(struct rv32_virtio *virtio)
-{
-    if (virtio->q_notify != -1) {
-        virtio->isr |= 1;
-        virtio->q_notify = -1;
-        return true;
-    }
-    return false;
-}
-
-exception_t read_boot(u8 *ram, u32 addr, u32 size, u32 *result)
-{
-    u32 idx = (addr - BOOT_ROM_BASE), tmp = 0;
-
-    switch (size) {
-    case 32:
-        tmp |= (u32)(ram[idx + 3]) << 24;
-        tmp |= (u32)(ram[idx + 2]) << 16;
-    case 16:
-        tmp |= (u32)(ram[idx + 1]) << 8;
-    case 8:
-        tmp |= (u32)(ram[idx + 0]) << 0;
-        *result = tmp;
-        return OK;
-    default:
-        return LOAD_ACCESS_FAULT;
-    }
-}
-
-exception_t read_ram(u8 *ram, u32 addr, u32 size, u32 *result)
-{
-    u32 idx = (addr - RAM_BASE), tmp = 0;
-
-    switch (size) {
-    case 32:
-        tmp |= (u32)(ram[idx + 3]) << 24;
-        tmp |= (u32)(ram[idx + 2]) << 16;
-    case 16:
-        tmp |= (u32)(ram[idx + 1]) << 8;
-    case 8:
-        tmp |= (u32)(ram[idx + 0]) << 0;
-        *result = tmp;
-        return OK;
-    default:
-        return LOAD_ACCESS_FAULT;
-    }
-}
-
-exception_t write_ram(u8 *ram, u32 addr, u32 size, u32 value)
-{
-    u32 idx = (addr - RAM_BASE);
-
-    switch (size) {
-    case 32:
-        ram[idx + 3] = (value >> 24) & 0xff;
-        ram[idx + 2] = (value >> 16) & 0xff;
-    case 16:
-        ram[idx + 1] = (value >> 8) & 0xff;
-    case 8:
-        ram[idx + 0] = (value >> 0) & 0xff;
-        return OK;
-    default:
-        return STORE_AMO_ACCESS_FAULT;
-    }
-}
-
-exception_t read_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 *result)
-{
-    if (RANGE_CHECK(addr, BOOT_ROM_BASE, 0xf000))
-        return read_boot(bus->boot->mem, addr, size, result);
-    if (RAM_BASE <= addr)
-        return read_ram(bus->ram, addr, size, result);
-    if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
-        return read_clint(bus->clint, addr, size, result);
-    if (RANGE_CHECK(addr, PLIC_BASE, PLIC_SIZE))
-        return read_plic(bus->plic, addr, size, result);
-    /* UART RX */
-    if (RANGE_CHECK(addr, UART_BASE, UART_SIZE))
-        return read_uart(bus->uart0, addr, size, result);
-    if (RANGE_CHECK(addr, VIRTIO_BASE, VIRTIO_SIZE))
-        return read_virtio(bus->virtio, addr, size, result);
-
-    return LOAD_ACCESS_FAULT;
-}
-
-exception_t write_bus(struct rv32_bus *bus, u32 addr, u32 size, u32 value)
-{
-    if (RAM_BASE <= addr)
-        return write_ram(bus->ram, addr, size, value);
-    if (RANGE_CHECK(addr, CLINT_BASE, CLINT_SIZE))
-        return write_clint(bus->clint, addr, size, value);
-    if (RANGE_CHECK(addr, PLIC_BASE, PLIC_SIZE))
-        return write_plic(bus->plic, addr, size, value);
-    /* UART TX */
-    if (RANGE_CHECK(addr, UART_BASE, UART_SIZE))
-        return write_uart(bus->uart0, addr, size, value);
-    if (RANGE_CHECK(addr, VIRTIO_BASE, VIRTIO_SIZE))
-        return write_virtio(bus->virtio, addr, size, value);
-
-    return STORE_AMO_ACCESS_FAULT;
 }
 
 u32 read_csr(struct rv32_core *core, u16 addr)
@@ -814,226 +327,6 @@ exception_t core_write_bus(struct rv32_core *core,
         return e;
 
     return write_bus(core->bus, pa, size, value);
-}
-
-void bus_disk_access(struct rv32_core *core)
-{
-    struct rv32_bus *bus = core->bus;
-
-    u32 desc_addr = virtio_desc_addr(bus->virtio);
-    u32 avail_addr = desc_addr + (VIRTIO_DESC_NUM * 0x10), used_addr = desc_addr + 4096;
-
-#if 0  // TODO
-    desc_addr = 0xc776a000;
-    avail_addr = 0xc776a040;
-    used_addr = 0xc776b000;
-
-    exception_t e = mmu_translate(core, desc_addr, LOAD_PAGE_FAULT, &desc_addr,
-                                  ACCESS_LOAD);
-    if (e != OK)
-        exit(0);
-
-    e = mmu_translate(core, avail_addr, LOAD_PAGE_FAULT, &avail_addr,
-                      ACCESS_LOAD);
-    if (e != OK)
-        exit(0);
-
-    e = mmu_translate(core, used_addr, LOAD_PAGE_FAULT, &used_addr,
-                      ACCESS_LOAD);
-    if (e != OK)
-        exit(0);
-#endif
-
-    u32 offset;
-    if (read_bus(bus, avail_addr + 2, 16, &offset) != OK)
-        pr_err("read offset");
-
-    u32 idx;
-    if (read_bus(bus, avail_addr + (offset % VIRTIO_DESC_NUM) + 4, 16, &idx) !=
-        OK)
-        pr_err("read index");
-
-    u32 desc_addr0 = desc_addr + VIRTIO_VRING_DESC_SIZE * idx;
-    u32 addr0;
-    if (read_bus(bus, desc_addr0, 32, &addr0) != OK)
-        pr_err("read address field in descriptor");
-
-    u32 len0;
-    if (read_bus(bus, desc_addr0 + 8, 32, &len0) != OK)
-        pr_err("read length field in descriptor");
-
-    u32 flags0;
-    if (read_bus(bus, desc_addr0 + 12, 16, &flags0) != OK)
-        pr_err("read flags field in descriptor");
-
-    u32 next0;
-    if (read_bus(bus, desc_addr0 + 14, 16, &next0) != OK)
-        pr_err("read next field in descriptor");
-
-    u32 desc_addr1 = desc_addr + VIRTIO_VRING_DESC_SIZE * next0;
-    u32 addr1;
-    if (read_bus(bus, desc_addr1, 32, &addr1) != OK)
-        pr_err("read address field in descriptor");
-
-    u32 len1;
-    if (read_bus(bus, desc_addr1 + 8, 32, &len1) != OK)
-        pr_err("read length field in descriptor");
-
-    u32 flags1;
-    if (read_bus(bus, desc_addr1 + 12, 16, &flags1) != OK)
-        pr_err("read flags field in descriptor");
-
-    u32 next1;
-    if (read_bus(bus, desc_addr1 + 14, 16, &next1) != OK)
-        pr_err("read next field in descriptor");
-
-    u32 desc_addr2 = desc_addr + VIRTIO_VRING_DESC_SIZE * next1;
-    u32 addr2;
-    if (read_bus(bus, desc_addr2, 32, &addr2) != OK)
-        pr_err("read address field in descriptor");
-
-    u32 len2;
-    if (read_bus(bus, desc_addr2 + 8, 32, &len2) != OK)
-        pr_err("read length field in descriptor");
-
-    u32 flags2;
-    if (read_bus(bus, desc_addr2 + 12, 16, &flags2) != OK)
-        pr_err("read flags field in descriptor");
-
-    u32 next2;
-    if (read_bus(bus, desc_addr2 + 14, 16, &next2) != OK)
-        pr_err("read next field in descriptor");
-
-    u32 blk_type;
-    if (read_bus(bus, addr0, 32, &blk_type) != OK)
-        pr_err("read sector field in virtio_blk_outhdr");
-
-    u32 blk_sector;
-    if (read_bus(bus, addr0 + 8, 32, &blk_sector) != OK)
-        pr_err("read sector field in virtio_blk_outhdr");
-
-    if (blk_type == 1) {
-        // write
-        for (u32 i = 0; i < len1; i++) {
-            u32 data;
-            if (read_bus(bus, addr1 + i, 8, &data) != OK)
-                pr_err("read from RAM");
-            virtio_disk_write(bus->virtio, blk_sector * 512 + i, data);
-        }
-    } else {
-        for (u32 i = 0; i < len1; i++) {
-            u32 data = virtio_disk_read(bus->virtio, blk_sector * 512 + i);
-            if (write_bus(bus, addr1 + i, 8, data) != OK)
-                pr_err("write to RAM");
-        }
-    }
-
-    if (write_bus(bus,
-                  used_addr + 8 + ((bus->virtio->id % VIRTIO_DESC_NUM) * 8), 16,
-                  len1 + len2) != OK)
-        pr_err("write to RAM");
-
-    if (write_bus(bus,
-                  used_addr + 4 + ((bus->virtio->id % VIRTIO_DESC_NUM) * 8), 16,
-                  idx) != OK)
-        pr_err("write to RAM");
-
-    u32 new_id = virtio_new_id(bus->virtio);
-    if (write_bus(bus, used_addr + 2, 16, new_id) != OK)
-        pr_err("write to RAM");
-}
-
-bool uart_is_interrupting(struct rv32_uart *uart)
-{
-    pthread_mutex_lock(&uart->lock);
-    bool interrupting = uart->interrupting;
-    uart->interrupting = false;
-    pthread_mutex_unlock(&uart->lock);
-
-    return interrupting;
-}
-
-void *uart_thread_func(void *priv)
-{
-    struct rv32_uart *uart = (struct rv32_uart *) priv;
-
-    while (1) {
-        struct pollfd pfd = {0, POLLIN, 0};
-        poll(&pfd, 1, 0);
-        if (!(pfd.revents & POLLIN))
-            continue;
-
-        char c;
-        /* An error or EOF */
-        if (read(STDIN_FILENO, &c, 1) <= 0)
-            continue;
-
-        pthread_mutex_lock(&uart->lock);
-        while ((uart->data[UART_LSR - UART_BASE] & UART_LSR_RX_EMPTY) == 1)
-            pthread_cond_wait(&uart->cond, &uart->lock);
-
-        uart->data[0] = c;
-        uart->interrupting = true;
-        uart->data[UART_LSR - UART_BASE] |= UART_LSR_RX_EMPTY;
-        pthread_mutex_unlock(&uart->lock);
-    }
-
-    /* Should not reach here */
-    return NULL;
-}
-
-struct rv32_uart *uart_init()
-{
-    struct rv32_uart *uart = malloc(sizeof(struct rv32_uart));
-
-    uart->data[UART_LSR - UART_BASE] |=
-        (UART_LSR_TX_EMPTY | UART_LSR_THR_SR_EMPTY);
-    pthread_mutex_init(&uart->lock, NULL);
-    pthread_cond_init(&uart->cond, NULL);
-    pthread_create(&uart->tid, NULL, uart_thread_func, (void *) uart);
-
-    return uart;
-}
-
-struct rv32_clint *clint_init()
-{
-    struct rv32_clint *clint = malloc(sizeof(struct rv32_clint));
-    clint->mtimecmp = 0;
-    clint->mtime = 0;
-
-    return clint;
-}
-
-struct rv32_plic *plic_init()
-{
-    return malloc(sizeof(struct rv32_plic));
-}
-
-struct rv32_virtio *virtio_init(u8 *disk)
-{
-    struct rv32_virtio *vio = malloc(sizeof(struct rv32_virtio));
-    memset(vio, 0, sizeof(struct rv32_virtio));
-
-    vio->config[1] = 0x00;
-    vio->config[2] = 0x01;
-    vio->disk = disk;
-    vio->q_notify = -1;
-
-    return vio;
-}
-
-struct rv32_bus *bus_init()
-{
-    struct rv32_bus *bus = malloc(sizeof(struct rv32_bus));
-
-    bus->ram = malloc(sizeof(char) * RAM_SIZE);
-    bus->boot = malloc(sizeof(struct rv32_boot));
-    bus->uart0 = uart_init();
-    bus->clint = clint_init();
-    bus->plic = plic_init();
-    bus->virtio = virtio_init(NULL);
-
-    return bus;
 }
 
 void load_binary(struct rv32_bus *bus, char *filename, u32 offset)
@@ -1225,7 +518,6 @@ exception_t fetch(struct rv32_core *core)
     return OK;
 }
 
-bool trans = false;
 #define SATP_SV32 (1 << 31)
 void core_update_paging(struct rv32_core *core, u16 csr_addr)
 {
@@ -1559,9 +851,6 @@ exception_t execute_32(struct rv32_core *core)
         switch (func3) {
         case 0x0:
             if (rs2 == 0x0 && func7 == 0x0) { /* ecall */
-                if (core->mode != USER)
-                    core->ctx.call = true;
-
                 switch (core->mode) {
                 case USER:
                 case SUPERVISOR:
@@ -1580,7 +869,7 @@ exception_t execute_32(struct rv32_core *core)
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) | (1 << 5));
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 8));
             } else if (rs2 == 0x2 && func7 == 0x18) { /* mret */
-                core->ctx.call = false;
+                printf("mret\n");
                 core->pc = read_csr(core, MEPC);
                 core->mode = (read_csr(core, MSTATUS) >> 11) & 3;
                 write_csr(core, MSTATUS,
@@ -1883,6 +1172,8 @@ void trap_handler(struct rv32_core *core,
             if (((read_csr(core, SIDELEG) >> cause) & 1) == 0)
                 core->mode = SUPERVISOR;
         }
+
+        cause = (0x80000000 | intr);
     } else {
         if (((read_csr(core, MEDELEG) >> cause) & 1) == 0)
             core->mode = MACHINE;
@@ -1893,9 +1184,6 @@ void trap_handler(struct rv32_core *core,
                 core->mode = USER;
         }
     }
-
-    if (is_interrupt)
-        cause = (0x80000000 | intr);
 
     if (core->mode == SUPERVISOR) {
         /* Set PC to handler routine address */
@@ -1948,6 +1236,8 @@ void trap_handler(struct rv32_core *core,
         mstatus = read_csr(core, MSTATUS);
         write_csr(core, MSTATUS, (mstatus & ~MSTATUS_MPP) | prev_mode << 11);
     } else if (core->mode == USER) {
+        /* TODO */
+        printf("User mode trap handler not imp!\n");
         exit(0);
     }
 }
@@ -1959,31 +1249,50 @@ enum {
 
 interrupt_t check_pending_interrupt(struct rv32_core *core)
 {
-    if (core->mode == MACHINE && ((read_csr(core, MSTATUS) >> 3) & 1) == 0)
+    /* Check the Interrupt Enable or not.
+     * Priority: M > S > U
+     */
+    if (core->mode == MACHINE && (read_csr(core, MSTATUS & MSTATUS_MIE) == 0))
         return NONE;
-    if (core->mode == SUPERVISOR && ((read_csr(core, SSTATUS) >> 1) & 1) == 0)
+    if (core->mode == SUPERVISOR &&
+        ((read_csr(core, SSTATUS) & SSTATUS_SIE) == 0))
         return NONE;
 
+    /* Handle External Interrupt */
     do {
         u32 irq;
         if (uart_is_interrupting(core->bus->uart0)) {
             irq = UART_IRQ;
         } else if (virtio_is_interrupting(core->bus->virtio)) {
-            bus_disk_access(core);
+            printf("virtio interrupt\n");
+            bus_disk_access(core->bus);
             irq = VIRTIO_IRQ;
         } else
             break;
         write_bus(core->bus, PLIC_CLAIM, 32, irq);
-        write_csr(core, MIP, read_csr(core, MIP) | MIP_SEIP);
+
+        if (core->mode == SUPERVISOR)
+            write_csr(core, MIP, read_csr(core, MIP) | MIP_SEIP);
+        else if (core->mode == MACHINE)
+            write_csr(core, MIP, read_csr(core, MIP) | MIP_MEIP);
     } while (0);
+
+    /* When CPU will handle an interrupt?
+     * e.g. Machine Timer Interrupt.
+     *      mstatus.mie = 1
+     *      mie (bit7) = 1
+     *      mip (bit7) = 1
+     */
 
     u32 pending = read_csr(core, MIE) & read_csr(core, MIP);
 
+    /* Machine External Interrupt Pending */
     if (pending & MIP_MEIP) {
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_MEIP);
         return MACHINE_EXTERNAL_INTERRUPT;
     }
 
+    /* Machine Software Interrupt Pending */
     if (pending & MIP_MSIP) {
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_MSIP);
         return MACHINE_SOFTWARE_INTERRUPT;
@@ -1992,20 +1301,24 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
     /* Machine Timer Interrupt Pending */
     if (pending & MIP_MTIP) {
         /* Clear Timer Interrupt Pending flag */
+        printf("MTIP\n");
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_MTIP);
         return MACHINE_TIMER_INTERRUPT;
     }
 
+    /* Supervisor External Interrupt Pending */
     if (pending && MIP_SEIP) {
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_SEIP);
         return SUPERVISOR_EXTERNAL_INTERRUPT;
     }
 
+    /* Supervisor Software Interrupt Pending */
     if (pending & MIP_SSIP) {
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_SSIP);
         return SUPERVISOR_SOFTWARE_INTERRUPT;
     }
 
+    /* Supervisor Timer Interrupt Pending */
     if (pending & MIP_STIP) {
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_STIP);
         return SUPERVISOR_TIMER_INTERRUPT;
@@ -2028,7 +1341,6 @@ void tick(struct rv32_core *core)
     }
 }
 
-
 int emu(int argc, char **argv)
 {
     struct rv32_core *core;
@@ -2042,7 +1354,7 @@ int emu(int argc, char **argv)
          */
         tick(core);
 
-re_fetch:
+    re_fetch:
         if ((e = fetch(core)) != OK) {
             trap_handler(core, e, NONE);
             if (e == INSTRUCTION_PAGE_FAULT)
