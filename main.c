@@ -16,15 +16,12 @@
 #include "uart.h"
 #include "virtio.h"
 
+#define RV32DF 1
+
 #if CONFIG_ARCH_TEST
+/* For riscv-test */
 static char signature_out_file[256];
 static bool opt_arch_test = false;
-
-/* For riscv-test */
-struct rv32_sig {
-    u32 start;
-    u32 end;
-};
 #endif
 
 typedef enum {
@@ -117,6 +114,12 @@ enum {
 #define clear_csr_bits(core, csr, mask) \
     write_csr(core, csr, read_csr(core, csr) & ~mask)
 
+/* NOTE:
+ * When will trans to S from M?
+ * xv6-rv32: start(), set M Previous Privilege mode
+ *                    to Supervisor, for mret.
+ * Linux : opensbi (M) -> ?? -> Linux (S).
+ */
 typedef enum {
     USER = 0x0,
     SUPERVISOR = 0x1,
@@ -133,6 +136,7 @@ struct rv32_ctx {
 struct rv32_core {
     core_mode_t mode;
     u32 xreg[32];
+    u32 fpu_reg[32][2];
     u32 csr[4096];
     u32 pc;
 
@@ -156,6 +160,12 @@ bool exception_is_fatal(exception_t e)
     default:
         return false;
     }
+}
+
+exception_t illegal_instruction(u8 opcode, u32 line)
+{
+    printf("(%d)ILLEGAL_INSTR : 0x%x\n", line, opcode);
+    return ILLEGAL_INSTRUCTION;
 }
 
 u32 read_csr(struct rv32_core *core, u16 addr)
@@ -534,6 +544,9 @@ void core_update_paging(struct rv32_core *core, u16 csr_addr)
 
 typedef enum {
     I_TYPE_LOAD = 0b00000011,
+#if (RV32DF == 1)
+    F_TYPE_FLW = 0b00000111,
+#endif
     I_TYPE_FENCE = 0b00001111,
     I_TYPE = 0b00010011,
     U_TYPE_AUIPC = 0b00010111,
@@ -541,6 +554,10 @@ typedef enum {
     A_TYPE = 0b00101111,
     R_TYPE = 0b00110011,
     U_TYPE_LUI = 0b00110111,
+#if (RV32DF == 1)
+    F_TYPE_FSW = 0b00100111,
+    F_TYPE     = 0b01010011,
+#endif
     B_TYPE = 0b01100011,
     I_TYPE_JARL = 0b01100111,
     J_TYPE = 0b01101111,
@@ -593,7 +610,7 @@ exception_t execute_32(struct rv32_core *core)
                 return e;
             break;
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -606,7 +623,7 @@ exception_t execute_32(struct rv32_core *core)
             /* TODO */
             break;
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
     case I_TYPE: {
         u32 imm = (int) (instr & 0xfff00000) >> 20;
@@ -636,7 +653,7 @@ exception_t execute_32(struct rv32_core *core)
                 core->xreg[rd] = (s32) core->xreg[rs1] >> shamt;
                 break;
             default:
-                return ILLEGAL_INSTRUCTION;
+                return illegal_instruction(opcode, __LINE__);
             }
             break;
         case 0x6: /* ori */
@@ -646,7 +663,7 @@ exception_t execute_32(struct rv32_core *core)
             core->xreg[rd] = core->xreg[rs1] & imm;
             break;
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -673,7 +690,7 @@ exception_t execute_32(struct rv32_core *core)
                 return e;
             break;
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -730,8 +747,15 @@ exception_t execute_32(struct rv32_core *core)
             if ((e = core_write_bus(core, addr, 32, value)) != OK)
                 return e;
             core->xreg[rd] = (int) (tmp & 0xffffffff);
+        } else if (func3 == 0x2 && func5 == 0x4) { /* amoxor.w */
+            printf("amoxor.w not imp\n");
+        } else if (func3 == 0x2 && func5 == 0x14) { /* amomax.w */
+            printf("amomax.w not imp\n");
+        } else if (func3 == 0x2 && func5 == 0x10) { /* amomin.w */
+            printf("amomin.w not imp\n");
         } else {
-            return ILLEGAL_INSTRUCTION;
+            printf("0x%x, 0x%x\n", core->pc, core->ctx.instr);
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -791,7 +815,7 @@ exception_t execute_32(struct rv32_core *core)
         } else if (func3 == 0x7 && func7 == 0x01) { /* remu */
             core->xreg[rd] = core->xreg[rs1] % core->xreg[rs2];
         } else {
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -828,7 +852,7 @@ exception_t execute_32(struct rv32_core *core)
                 core->pc += imm - 4;
             break;
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
@@ -861,7 +885,7 @@ exception_t execute_32(struct rv32_core *core)
                 return BREAKPOINT;
             } else if (rs2 == 0x2 && func7 == 0x8) { /* sret */
                 core->pc = read_csr(core, SEPC);
-                core->mode = read_csr(core, SSTATUS) >> 8;
+                core->mode = read_csr(core, SSTATUS) >> 8 & 3;
                 write_csr(core, SSTATUS,
                           ((read_csr(core, SSTATUS) >> 5) & 1)
                               ? read_csr(core, SSTATUS) | (1 << 1)
@@ -869,7 +893,6 @@ exception_t execute_32(struct rv32_core *core)
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) | (1 << 5));
                 write_csr(core, SSTATUS, read_csr(core, SSTATUS) & ~(1 << 8));
             } else if (rs2 == 0x2 && func7 == 0x18) { /* mret */
-                printf("mret\n");
                 core->pc = read_csr(core, MEPC);
                 core->mode = (read_csr(core, MSTATUS) >> 11) & 3;
                 write_csr(core, MSTATUS,
@@ -925,12 +948,45 @@ exception_t execute_32(struct rv32_core *core)
             break;
         }
         default:
-            return ILLEGAL_INSTRUCTION;
+            return illegal_instruction(opcode, __LINE__);
         }
         break;
     }
+#if (RV32DF == 1)
+    case F_TYPE_FLW: {
+        u32 imm = (int) instr >> 20;
+        u32 addr = core->xreg[rs1] + imm;
+        if ((e = core_read_bus(core, addr, 32, &core->fpu_reg[rd][0])) != OK)
+            return e;
+
+    } break;
+    case F_TYPE_FSW: {
+        u32 imm = (u32)((s32)((instr >> 7) & 0x1f) |
+                        ((s32)((instr >> 25) & 0x7f) << 5));
+        u32 addr = core->xreg[rs1] + imm;
+        if ((e = core_write_bus(core, addr, 32, core->fpu_reg[rs2][0])) != OK)
+            return e;
+    } break;
+    case F_TYPE: {
+        u32 func5 = (func7 & 0x7c) >> 2;
+        u32 rm = (instr >> 12) & 0x7;
+
+        switch (func5) {
+        case 0x1c: { /* fmv.x.w */
+            printf("%d not imp\n", __LINE__);
+        } break;
+        case 0x1e: { /* fmv.w.x */
+            if (rs2 != 0 || rm != 0)
+                return illegal_instruction(opcode, __LINE__);
+            core->fpu_reg[rd][0] = core->xreg[rs1];
+        } break;
+        default:
+            return illegal_instruction(opcode, __LINE__);
+        };
+    } break;
+#endif
     default:
-        return ILLEGAL_INSTRUCTION;
+        return illegal_instruction(opcode, __LINE__);
     };
 
     return OK;
@@ -962,7 +1018,23 @@ exception_t execute_16(struct rv32_core *core)
             if (imm != 0)
                 core->xreg[rd_] = core->xreg[2] + imm;
         } break;
-        case 0x2: /* c.lw */
+#if (RV32DF == 1)
+        case 0x1: { /* c.fld */
+            printf("c.fld\n");
+
+            offset = ((instr >> 5) & 0x3) << 6 | ((instr >> 10) & 0x7) << 3;
+            addr = core->xreg[rs1_] + offset;
+
+            if ((e = core_read_bus(core, addr, 32, &core->fpu_reg[rd_][0])) !=
+                OK)
+                return e;
+            if ((e = core_read_bus(core, (addr + 1), 32,
+                                   &core->fpu_reg[rd_][1])) != OK)
+                return e;
+
+        } break;
+#endif
+        case 0x2: { /* c.lw */
             offset = ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 2 |
                      ((instr >> 10) & 0x7) << 3;
             addr = core->xreg[rs1_] + offset;
@@ -970,7 +1042,19 @@ exception_t execute_16(struct rv32_core *core)
             if ((e = core_read_bus(core, addr, 32, &result)) != OK)
                 return e;
             core->xreg[rd_] = (s32) result;
-            break;
+        } break;
+#if (RV32DF == 1)
+        case 0x3: { /* c.flw */
+            printf("c.flw\n");
+            offset = ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 2 |
+                     ((instr >> 10) & 0x7) << 3;
+            addr = core->xreg[rs1_] + offset;
+
+            if ((e = core_read_bus(core, addr, 32, &core->fpu_reg[rd_][0])) !=
+                OK)
+                return e;
+        } break;
+#endif
         case 0x6: /* c.sw */
             offset = ((instr >> 5) & 0x1) << 6 | ((instr >> 6) & 0x1) << 2 |
                      ((instr >> 10) & 0x7) << 3;
@@ -980,8 +1064,15 @@ exception_t execute_16(struct rv32_core *core)
                 return e;
 
             break;
+#if (RV32DF == 1)
+        case 0x7: { /* c.fsw */
+            printf("c.fsw\n");
+            exit(0);
+        } break;
+#endif
         default:
-            return ILLEGAL_INSTRUCTION;
+            printf("0x%x\n", core->ctx.instr);
+            return illegal_instruction(opcode, __LINE__);
         }
     } break;
     case 0x1: {
@@ -1077,7 +1168,7 @@ exception_t execute_16(struct rv32_core *core)
                 break;
 
             default:
-                return ILLEGAL_INSTRUCTION;
+                return illegal_instruction(opcode, __LINE__);
             }
         }
 
@@ -1114,17 +1205,47 @@ exception_t execute_16(struct rv32_core *core)
             addr = core->xreg[2] + offset;  // sp
             if ((e = core_read_bus(core, addr, 32, &core->xreg[rd])) != OK)
                 return e;
+#if (RV32DF == 1)
+        } else if (func3 == 0x3) { /* c.flwsp */
+            printf("c.flwsp\n");
+            offset = ((instr >> 2) & 0x3) << 6 | ((instr >> 4) & 0x7) << 2 |
+                     ((instr >> 12) & 0x1) << 5;
+            addr = core->xreg[2] + offset;  // sp
+            if ((e = core_read_bus(core, addr, 32, &core->fpu_reg[rd][0])) !=
+                OK)
+                return e;
+        } else if (func3 == 0x5) { /* c.fsdsp */
+            printf("c.fsdsp\n");
+            offset = ((instr >> 10) & 0x7) << 3 | ((instr >> 7) & 0x7) << 6;
+            addr = core->xreg[2] + offset;  // sp
+            if ((e = core_write_bus(core, addr, 32, core->fpu_reg[rs2][0])) !=
+                OK)
+                return e;
+            if ((e = core_write_bus(core, (addr + 1), 32,
+                                    core->fpu_reg[rs2][1])) != OK)
+                return e;
+#endif
         } else if (func3 == 0x6) { /* c.swsp */
             offset = ((instr >> 7) & 0x3) << 6 | ((instr >> 9) & 0xf) << 2;
             addr = core->xreg[2] + offset;  // sp
             if ((e = core_write_bus(core, addr, 32, core->xreg[rs2])) != OK)
                 return e;
+#if (RV32DF == 1)
+        } else if (func3 == 0x7) { /* c.fswsp */
+            printf("c.fswsp, 0x%x\n", core->fpu_reg[rs2][0]);
+            offset = ((instr >> 9) & 0xf) << 2 | ((instr >> 7) & 0x3) << 6;
+            addr = core->xreg[2] + offset;  // sp
+            if ((e = core_write_bus(core, addr, 32, core->fpu_reg[rs2][0])) !=
+                OK)
+                return e;
+#endif
         } else {
-            return ILLEGAL_INSTRUCTION;
+            printf("0x%x, 0x%x\n", core->ctx.instr, func3);
+            return illegal_instruction(opcode, __LINE__);
         }
     } break;
     default:
-        return ILLEGAL_INSTRUCTION;
+        return illegal_instruction(opcode, __LINE__);
     };
 
     return OK;
@@ -1198,6 +1319,7 @@ void trap_handler(struct rv32_core *core,
 
         write_csr(core, SEPC, exception_pc & ~1);
         write_csr(core, SCAUSE, cause);
+        /* TODO */
         write_csr(core, STVAL, core->ctx.stval);
 
         u32 sstatus = read_csr(core, SSTATUS);
@@ -1226,7 +1348,7 @@ void trap_handler(struct rv32_core *core,
         /* Set MTVAL to 0 because this is an interrupt
          * (access illegal and illegal Instruction need to update MTVAL)
          */
-        write_csr(core, MTVAL, 0);
+        write_csr(core, MTVAL, core->ctx.stval);
 
         u32 mstatus = read_csr(core, MSTATUS);
         write_csr(core, MSTATUS,
@@ -1264,7 +1386,6 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
         if (uart_is_interrupting(core->bus->uart0)) {
             irq = UART_IRQ;
         } else if (virtio_is_interrupting(core->bus->virtio)) {
-            printf("virtio interrupt\n");
             bus_disk_access(core->bus);
             irq = VIRTIO_IRQ;
         } else
