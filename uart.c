@@ -57,11 +57,21 @@ exception_t read_uart(struct rv32_uart *uart, u32 addr, u32 size, u32 *result)
     if (size != 8)
         return LOAD_ACCESS_FAULT;
 
+    /* FIXME */
     pthread_mutex_lock(&uart->lock);
     switch (addr) {
+    case UART_IIR:
+        *result = uart->data[UART_IIR - UART_BASE] | 0x01;
+        break;
+    case UART_LSR:
+        *result = uart->data[UART_LSR - UART_BASE] | UART_LSR_TX_EMPTY |
+                  UART_LSR_THR_SR_EMPTY;
+        break;
     case UART_RHR:
         pthread_cond_broadcast(&uart->cond);  // wake up thread
         uart->data[UART_LSR - UART_BASE] &= ~UART_LSR_RX_EMPTY;
+        *result = uart->data[addr - UART_BASE];
+        break;
     default:
         *result = uart->data[addr - UART_BASE];
     }
@@ -75,10 +85,18 @@ exception_t write_uart(struct rv32_uart *uart, u32 addr, u32 size, u32 value)
     if (size != 8)
         return STORE_AMO_ACCESS_FAULT;
 
+    /* FIXME */
     pthread_mutex_lock(&uart->lock);
     switch (addr) {
+    case UART_IER:
+        uart->data[UART_IER - UART_BASE] = (value & 0xff);
+        break;
+    case UART_IIR:
+        uart->data[addr - UART_BASE] = (value & 0xff);
+        break;
     case UART_THR:
         fprintf(stdout, "%c", (value & 0xff));
+        fflush(stdout);
         break;
     default:
         uart->data[addr - UART_BASE] = (value & 0xff);

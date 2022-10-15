@@ -90,6 +90,9 @@ enum {
 
 /* MIP */
 enum {
+    MIP_USIP = (1 << 0),
+    MIP_UTIP = (1 << 4),
+    MIP_UEIP = (1 << 8),
     MIP_SSIP = (1 << 1),
     MIP_STIP = (1 << 5),
     MIP_SEIP = (1 << 9),
@@ -317,6 +320,7 @@ exception_t core_read_bus(struct rv32_core *core,
                           u32 *result)
 {
     u32 pa;
+
     exception_t e =
         mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa, ACCESS_LOAD);
     if (e != OK)
@@ -331,6 +335,7 @@ exception_t core_write_bus(struct rv32_core *core,
                            u32 value)
 {
     u32 pa;
+
     exception_t e =
         mmu_translate(core, addr, LOAD_PAGE_FAULT, &pa, ACCESS_STORE);
     if (e != OK)
@@ -556,7 +561,7 @@ typedef enum {
     U_TYPE_LUI = 0b00110111,
 #if (RV32DF == 1)
     F_TYPE_FSW = 0b00100111,
-    F_TYPE     = 0b01010011,
+    F_TYPE = 0b01010011,
 #endif
     B_TYPE = 0b01100011,
     I_TYPE_JARL = 0b01100111,
@@ -986,6 +991,8 @@ exception_t execute_32(struct rv32_core *core)
     } break;
 #endif
     default:
+        printf("0x%x, 0x%x, a5:0x%x\n", core->pc, core->ctx.instr,
+               core->xreg[15]);
         return illegal_instruction(opcode, __LINE__);
     };
 
@@ -1071,7 +1078,7 @@ exception_t execute_16(struct rv32_core *core)
         } break;
 #endif
         default:
-            printf("0x%x\n", core->ctx.instr);
+            printf("0x%x, 0x%x\n", core->pc, core->ctx.instr);
             return illegal_instruction(opcode, __LINE__);
         }
     } break;
@@ -1279,6 +1286,8 @@ void trap_handler(struct rv32_core *core,
     case BREAKPOINT:
     case ECALL_FROM_S_MODE:
     case ECALL_FROM_U_MODE:
+    case LOAD_PAGE_FAULT:
+    case STORE_PAGE_FAULT:
         exception_pc = core->pc - 4;
         break;
     default:
@@ -1396,6 +1405,8 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
             write_csr(core, MIP, read_csr(core, MIP) | MIP_SEIP);
         else if (core->mode == MACHINE)
             write_csr(core, MIP, read_csr(core, MIP) | MIP_MEIP);
+        else if (core->mode == USER)
+            write_csr(core, MIP, read_csr(core, MIP) | MIP_UEIP);
     } while (0);
 
     /* When CPU will handle an interrupt?
@@ -1422,7 +1433,6 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
     /* Machine Timer Interrupt Pending */
     if (pending & MIP_MTIP) {
         /* Clear Timer Interrupt Pending flag */
-        printf("MTIP\n");
         write_csr(core, MIP, read_csr(core, MIP) & ~MIP_MTIP);
         return MACHINE_TIMER_INTERRUPT;
     }
@@ -1445,6 +1455,24 @@ interrupt_t check_pending_interrupt(struct rv32_core *core)
         return SUPERVISOR_TIMER_INTERRUPT;
     }
 
+    /* USER External Interrupt Pending */
+    if (pending && MIP_UEIP) {
+        printf("UEIP\n");
+        write_csr(core, MIP, read_csr(core, MIP) & ~MIP_UEIP);
+        return USER_EXTERNAL_INTERRUPT;
+    }
+
+    /* USER Software Interrupt Pending */
+    if (pending & MIP_USIP) {
+        write_csr(core, MIP, read_csr(core, MIP) & ~MIP_USIP);
+        return USER_SOFTWARE_INTERRUPT;
+    }
+
+    /* USER Timer Interrupt Pending */
+    if (pending & MIP_UTIP) {
+        write_csr(core, MIP, read_csr(core, MIP) & ~MIP_UTIP);
+        return USER_TIMER_INTERRUPT;
+    }
     return NONE;
 }
 

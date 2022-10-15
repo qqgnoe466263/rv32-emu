@@ -28,6 +28,15 @@
 $ make
 ```
 
+* Build riscv32 toolchain:
+    * Without Float/Double.
+```shell
+$ git clone https://github.com/riscv-collab/riscv-gnu-toolchain.git
+$ cd riscv-gnu-toolchain
+$ ./configure --prefix=/opt/riscv --with-arch=rv32imac --with-abi=ilp32
+$ sudo make -j4
+```
+
 * Build the u-boot:
 ```shell
 $ git clone https://github.com/u-boot/u-boot.git
@@ -49,6 +58,11 @@ $ git clone https://github.com/torvalds/linux
 $ cd linux
 $ git checkout v5.4
 $ make ARCH=riscv CROSS_COMPILE=/<pathto>/riscv32-unknown-linux-gnu- rv32_defconfig
+$ vim .config
+...
+CONFIG_FPU=n
+...
+
 $ make ARCH=riscv CROSS_COMPILE=/<pathto>/riscv32-unknown-linux-gnu- -j4
 
 $ ls arch/riscv/boot/Image
@@ -135,49 +149,44 @@ Hit any key to stop autoboot:  1
 ......
 ```
 
-### Run Linux with OpenSBI [WIP]
+### Run Linux with OpenSBI
 
 * Reference Output
-    * Linux's CONFIG_FPU=n.
-    * busybox.bin is produced by myself and it has some d/f instructions.
+    * FIXME: UART has bugs.
 ```shell
 $ ./rv_emu --bios fw_jump.bin --kernel Image --rootfs busybox.bin --dtb dts/riscv_em.dtb
 
-[    3.734323] EXT4-fs (vda): mounting ext2 file system using the ext4 subsystem
-[    3.785606] EXT4-fs (vda): warning: mounting unchecked fs, running e2fsck is recommended
-[    3.799403] EXT4-fs (vda): mounted filesystem without journal. Opts: (null)
-[    3.801502] VFS: Mounted root (ext2 filesystem) on device 254:0.
-[    3.806203] devtmpfs: mounted
-[    3.814009] Freeing unused kernel memory: 192K
-[    3.814907] This architecture does not have kernel memory protection.
-[    3.816059] Run /sbin/init as init process
-[    3.891741] init[1]: unhandled signal 4 code 0x1 at 0x001813c6 in busybox[10000+18d000]
-[    3.893712] CPU: 0 PID: 1 Comm: init Not tainted 5.4.0 #125
-[    3.894879] sepc: 001813c6 ra : 000c3f5a sp : 9c9a1de0
-[    3.895960]  gp : 001a07c0 tp : 00000000 t0 : 00000000
-[    3.897027]  t1 : 00000000 t2 : 00000000 s0 : 00000000
-[    3.898111]  s1 : 00000000 a0 : 9c9a1f28 a1 : 00000000
-[    3.899196]  a2 : 00000000 a3 : 0018134c a4 : 0000001e
-[    3.900276]  a5 : 001813c4 a6 : 00000000 a7 : 00000000
-[    3.901343]  s2 : 00000000 s3 : 00000000 s4 : 00000000
-[    3.902410]  s5 : 00000000 s6 : 00000000 s7 : 00000000
-[    3.903477]  s8 : 00000000 s9 : 00000000 s10: 00000000
-[    3.904544]  s11: 00000000 t3 : 00000000 t4 : 00000000
-[    3.905561]  t5 : 00000000 t6 : 00000000
-[    3.906505] sstatus: 00000020 sbadaddr: 00000010 scause: 00000002
-[    3.912163] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004
-[    3.913665] CPU: 0 PID: 1 Comm: init Not tainted 5.4.0 #125
-[    3.914660] Call Trace:
-[    3.915606] [<c00322c6>] walk_stackframe+0x0/0xa6
-[    3.916822] [<c003243a>] show_stack+0x28/0x32
-[    3.917930] [<c05fb9f4>] dump_stack+0x6a/0x86
-[    3.919031] [<c0036eae>] panic+0xdc/0x23c
-[    3.920104] [<c0038cf8>] do_exit+0x6f6/0x71a
-[    3.921221] [<c00397d6>] do_group_exit+0x2a/0x7a
-[    3.922382] [<c00425d4>] get_signal+0x108/0x6c0
-[    3.923575] [<c0031ae2>] do_notify_resume+0x42/0x270
-[    3.924809] [<c00313f0>] ret_from_exception+0x0/0xc
-[    3.926011] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004 ]---
+[    3.433362] virtio_blk virtio0: [vda] 65536 512-byte logical blocks (33.6 MB/32.0 MiB)
+[    3.477636] libphy: Fixed MDIO Bus: probed
+[    3.503936] e1000e: Intel(R) PRO/1000 Network Driver - 3.2.6-k
+[    3.505020] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    3.509911] ehci_hcd: USB 2.0 'Enhanced' Host Controller (EHCI) Driver
+[    3.511084] ehci-pci: EHCI PCI platform driver
+[    3.513450] ehci-platform: EHCI generic platform driver
+[    3.516399] ohci_hcd: USB 1.1 'Open' Host Controller (OHCI) Driver
+[    3.517527] ohci-pci: OHCI PCI platform driver
+[    3.519893] ohci-platform: OHCI generic platform driver
+[    3.528264] usbcore: registered new interface driver uas
+[    3.531347] usbcore: registered new interface driver usb-storage
+[    3.536688] mousedev: PS/2 mouse device common for all mice
+[    3.547580] usbcore: registered new interface driver usbhid
+[    3.548594] usbhid: USB HID core driver
+[    3.589643] NET: Registered protocol family 10
+[    3.614942] Segment Routing with IPv6
+[    3.618890] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    3.643992] NET: Registered protocol family 17
+[    3.654559] 9pnet: Installing 9P2000 support
+[    3.656964] Key type dns_resolver registered
+[    3.691009] EXT4-fs (vda): mounting ext2 file system using the ext4 subsystem
+[    3.741424] EXT4-fs (vda): warning: mounting unchecked fs, running e2fsck is recommended
+[    3.755032] EXT4-fs (vda): mounted filesystem without journal. Opts: (null)
+[    3.757121] VFS: Mounted root (ext2 filesystem) on device 254:0.
+[    3.761763] devtmpfs: mounted
+[    3.769553] Freeing unused kernel memory: 192K
+[    3.770454] This architecture does not have kernel memory protection.
+[    3.771604] Run /sbin/init as init process
+can't run '/etc 
+
 ```
 ## Compliance Test
 

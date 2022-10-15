@@ -12,6 +12,10 @@
 #define UART_SIZE (0x100)
 #define UART_THR (UART_BASE + 0)  // TX
 #define UART_RHR (UART_BASE + 0)  // RX
+#define UART_IER (UART_BASE + 1)
+#define UART_IIR (UART_BASE + 2)
+#define UART_FCR (UART_BASE + 2)
+#define UART_LSR (UART_BASE + 5)
 #define UART_LSR (UART_BASE + 5)
 #define UART_LSR_RX_EMPTY (1 << 0)
 #define UART_LSR_TX_EMPTY (1 << 5)

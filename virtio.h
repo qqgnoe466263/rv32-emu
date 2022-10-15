@@ -58,24 +58,24 @@ exception_t write_virtio(struct rv32_virtio *virtio,
                          u32 size,
                          u32 value);
 
-inline u32 virtio_desc_addr(struct rv32_virtio *virtio)
+static inline u32 virtio_desc_addr(struct rv32_virtio *virtio)
 {
     return (u32) virtio->q_pfn * (u32) virtio->page_size;
 }
 
-inline u32 virtio_disk_read(const struct rv32_virtio *virtio, u32 addr)
+static inline u32 virtio_disk_read(const struct rv32_virtio *virtio, u32 addr)
 {
     return virtio->disk[addr];
 }
 
-inline void virtio_disk_write(const struct rv32_virtio *virtio,
-                              u32 addr,
-                              u32 value)
+static inline void virtio_disk_write(const struct rv32_virtio *virtio,
+                                     u32 addr,
+                                     u32 value)
 {
     virtio->disk[addr] = (u8) value;
 }
 
-inline u32 virtio_new_id(struct rv32_virtio *virtio)
+static inline u32 virtio_new_id(struct rv32_virtio *virtio)
 {
     return ++(virtio->id);
 }
